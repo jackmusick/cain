@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from PySide6.QtCore import QMimeData, QPoint, QRect, QSettings, QSize, Qt, QThread, Signal
+from PySide6.QtCore import QMimeData, QPoint, QRect, QSettings, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QBrush,
@@ -2185,6 +2185,22 @@ class _SaveWorker(QThread):
             self.done.emit({"ok": False, "results": [{"error": str(e)}]})
 
 
+class _ValidateWorker(QThread):
+    done = Signal(int, dict)   # (revision-validated, result)
+
+    def __init__(self, path: str, rev: int, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._rev = rev
+
+    def run(self):
+        try:
+            res = save_api.validate_buffer(self._path)
+        except Exception as e:  # noqa: BLE001
+            res = {"ok": False, "errors": [str(e)]}
+        self.done.emit(self._rev, res)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2202,6 +2218,13 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(app_icon())
         self.resize(1150, 810)
         self._build_ui()
+        self._last_rev = 0
+        self._validated_rev = 0
+        self._validating = False
+        self._poll = QTimer(self)
+        self._poll.setInterval(250)
+        self._poll.timeout.connect(self._poll_tick)
+        self._poll.start()
         self._build_menu()
         if not self._ensure_setup():
             raise SystemExit(0)
@@ -2351,7 +2374,23 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(scrolled(stash_tab), "Stash")
         self.tabs.addTab(other_tab, "Mercenary")
         self.tabs.addTab(all_tab, "All Items")
-        self.setCentralWidget(self.tabs)
+
+        self.validation_banner = QLabel("")
+        self.validation_banner.setObjectName("validationBanner")
+        self.validation_banner.setStyleSheet(
+            "#validationBanner { background:#5a1e1e; color:#ffd9d9; padding:6px 10px; }")
+        self.validation_banner.setVisible(False)
+        self.validation_banner.setCursor(Qt.PointingHandCursor)
+        self.validation_banner.mousePressEvent = lambda _e: self._show_validation_details()
+        self._validation_errors: list[str] = []
+
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self.validation_banner)
+        central_layout.addWidget(self.tabs, 1)
+        self.setCentralWidget(central)
 
     def _ensure_setup(self) -> bool:
         mpq = self.settings.value("paths/mpq", "")
@@ -2480,6 +2519,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not load save", str(e))
             return
         self.loaded = LoadedSave(path=path, data=data)
+        self._last_rev = 0
+        self._validated_rev = 0
+        self._validating = False
+        self._validation_errors = []
+        self.validation_banner.setVisible(False)
         self.render_save()
 
     def _update_title(self):
@@ -2490,6 +2534,40 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowTitle("Cain")
         self.save_action.setEnabled(dirty)
+
+    def _poll_tick(self):
+        self._update_title()
+        if not self.loaded or not save_api.is_warm():
+            return
+        path = self.loaded.path
+        rev = save_api.revision(path)
+        if rev == self._last_rev:
+            # buffer settled; validate once per new revision
+            if rev != self._validated_rev and not self._validating:
+                self._validating = True
+                self._validator = _ValidateWorker(path, rev, self)
+                self._validator.done.connect(self._on_validated)
+                self._validator.start()
+        self._last_rev = rev
+
+    def _on_validated(self, rev: int, res: dict):
+        self._validating = False
+        self._validated_rev = rev
+        if res.get("ok"):
+            self._validation_errors = []
+            self.validation_banner.setVisible(False)
+        else:
+            self._validation_errors = list(res.get("errors", []))
+            n = len(self._validation_errors)
+            self.validation_banner.setText(
+                f"⚠ {n} validation issue{'s' if n != 1 else ''} — click for details")
+            self.validation_banner.setVisible(True)
+
+    def _show_validation_details(self):
+        if not self._validation_errors:
+            return
+        QMessageBox.warning(self, "Validation issues",
+                            "\n".join(self._validation_errors[:40]))
 
     def save_now(self):
         if not save_api.dirty_paths():
