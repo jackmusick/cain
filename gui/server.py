@@ -1951,7 +1951,18 @@ def _simple_stats_from_specs(specs: list[dict], version: int, gt: GameTables):
             # The simple functions use min/max as the stat value. More complex
             # property functions are handled explicitly below when their D2 item
             # stat packing is well understood.
-            if func in (1, 2, 3, 8, 14, 21) and stat_name:
+            if func == 21 and stat_name:
+                # class-specific skills (e.g. "+2 to Assassin Skills"): the class
+                # lives in the property's val1 column (ama=0, sor=1, nec=2, pal=3,
+                # bar=4, dru=5, ass=6). Without writing it as the stat param the
+                # item serializes with param 0 = Amazon — the "+2 Amazon skills"
+                # bug on assassin uniques like Bartuc's. Carry the class through.
+                class_id = _int(prop.get("val1", ""), 0)
+                stat = _item_stat_with_param(stat_name, value, class_id, version, gt)
+                if stat:
+                    stats.append(stat)
+                continue
+            if func in (1, 2, 3, 8, 14) and stat_name:
                 name_values[stat_name] = value
                 continue
             if func == 5:
