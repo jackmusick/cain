@@ -575,19 +575,49 @@ def _clean_base_name(meta: dict, code: str) -> str:
     return swaps.get(name, name)
 
 
-def _quality_row_name(table: str, row_id: int, code: str) -> str:
-    if row_id < 0:
+def _is_separator_row(r: dict) -> bool:
+    """UniqueItems/SetItems have an 'Expansion' separator row (blank code) that
+    the game does NOT count in its unique/set id numbering. Items store the
+    game id, so we must skip these rows when mapping id <-> table row."""
+    idx = (r.get("index", "") or "").strip()
+    return not idx or idx.lower() == "expansion"
+
+
+def _row_to_gameid(table: str, row_idx: int) -> int:
+    """Table row index -> stored game id (row index minus separators before it)."""
+    rows = tables().load_table(table)
+    seps = sum(1 for i, r in enumerate(rows) if i < row_idx and _is_separator_row(r))
+    return row_idx - seps
+
+
+def _gameid_to_row(table: str, game_id: int):
+    """Stored game id -> table row index (re-adding skipped separator rows)."""
+    rows = tables().load_table(table)
+    seen = -1
+    for i, r in enumerate(rows):
+        if _is_separator_row(r):
+            continue
+        seen += 1
+        if seen == game_id:
+            return i
+    return None
+
+
+def _quality_row_name(table: str, game_id: int, code: str) -> str:
+    if game_id < 0:
         return ""
     try:
         rows = tables().load_table(table)
     except Exception:
         return ""
-    if row_id >= len(rows):
+    row_id = _gameid_to_row(table, game_id)
+    if row_id is None or row_id >= len(rows):
         return ""
     row = rows[row_id]
     if row.get("code", "").strip() and row.get("code", "").strip() != code:
         return ""
-    return (row.get("index", "") or row.get("name", "")).strip()
+    index = (row.get("index", "") or row.get("name", "")).strip()
+    return game_strings().get(index.lower(), index) or index
 
 
 def _row_name(table: str, row_id: int, zero_is_none: bool = True) -> str:
@@ -3048,15 +3078,19 @@ def do_additem(body):
         selected = body.get("set_id" if quality == 5 else "unique_id", body.get("set_unique_id", -1))
         if selected is None or int(selected) < 0:
             return {"error": "choose a matching set/unique item for this quality"}
-        new.set_unique_id = max(0, min(4095, int(selected)))
         table = "SetItems" if quality == 5 else "UniqueItems"
         rows = gt.load_table(table)
-        if new.set_unique_id >= len(rows):
-            return {"error": f"{table} row out of range: {new.set_unique_id}"}
-        row_code = (rows[new.set_unique_id].get("item", "") if quality == 5 else rows[new.set_unique_id].get("code", "")).strip()
+        # the UI sends the TABLE ROW index; the file stores the GAME id, which
+        # skips the 'Expansion' separator row — otherwise the item shows the next
+        # unique's name in-game (e.g. Bartuc's row 287 -> Jalal's Mane).
+        row_idx = max(0, min(len(rows) - 1, int(selected)))
+        if row_idx >= len(rows):
+            return {"error": f"{table} row out of range: {row_idx}"}
+        row_code = (rows[row_idx].get("item", "") if quality == 5 else rows[row_idx].get("code", "")).strip()
         if row_code and row_code != code:
-            return {"error": f"{rows[new.set_unique_id].get('index', table)} is for {row_code}, not {code}"}
-        generated_specs.extend(_property_specs(rows[new.set_unique_id], "prop", 12))
+            return {"error": f"{rows[row_idx].get('index', table)} is for {row_code}, not {code}"}
+        generated_specs.extend(_property_specs(rows[row_idx], "prop", 12))
+        new.set_unique_id = _row_to_gameid(table, row_idx)
     elif quality in (6, 8):
         new.prefix = max(0, min(255, int(body.get("rare_prefix", 156) or 156)))
         new.suffix = max(0, min(255, int(body.get("rare_suffix", 0) or 0)))
