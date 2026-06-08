@@ -323,6 +323,68 @@ _gt = None
 _mpq = DEFAULT_MPQ
 _item_meta = None
 
+# --- in-memory edit session -------------------------------------------------
+# path -> {"data": bytearray, "dirty": bool, "kind": "d2s"|"stash", "rev": int}
+_SESSION: dict[str, dict] = {}
+
+
+def _session_key(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(path))
+
+
+def _read_bytes(path: str) -> bytearray:
+    """Return the live in-memory buffer for `path`, loading it from disk once.
+
+    All save-file reads in this module go through here so edits are visible
+    without touching disk until an explicit commit_save()."""
+    key = _session_key(path)
+    entry = _SESSION.get(key)
+    if entry is None:
+        data = bytearray(open(path, "rb").read())
+        entry = {"data": data, "dirty": False,
+                 "kind": "stash" if _is_stash(path, bytes(data)) else "d2s",
+                 "rev": 0}
+        _SESSION[key] = entry
+    return entry["data"]
+
+
+def _store_bytes(path: str, data) -> None:
+    """Replace the buffer for `path`, marking it dirty and bumping its revision."""
+    key = _session_key(path)
+    entry = _SESSION.get(key)
+    buf = data if isinstance(data, bytearray) else bytearray(data)
+    if entry is None:
+        entry = {"data": buf, "dirty": True,
+                 "kind": "stash" if _is_stash(path, bytes(buf)) else "d2s",
+                 "rev": 1}
+        _SESSION[key] = entry
+    else:
+        entry["data"] = buf
+        entry["dirty"] = True
+        entry["rev"] += 1
+
+
+def discard(path: str) -> None:
+    """Drop the in-memory buffer so the next read reloads from disk."""
+    _SESSION.pop(_session_key(path), None)
+
+
+def dirty_paths() -> list[str]:
+    return [k for k, e in _SESSION.items() if e["dirty"]]
+
+
+def revision(path: str) -> int:
+    entry = _SESSION.get(_session_key(path))
+    return entry["rev"] if entry else 0
+
+
+def reset_session() -> None:
+    """Test/teardown hook: forget all buffers."""
+    _SESSION.clear()
+
+
+# ---------------------------------------------------------------------------
+
 
 def _int(s, default: int = 0) -> int:
     try:
