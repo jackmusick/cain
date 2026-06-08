@@ -2369,6 +2369,12 @@ class MainWindow(QMainWindow):
             new_mpq = self.settings.value("paths/mpq", "")
             new_save = self.settings.value("paths/save", "")
             if new_mpq != old_mpq or new_save != old_save:
+                if not self._confirm_lose_changes():
+                    # user kept unsaved edits (or save failed) — revert the path
+                    # change so QSettings stays consistent with the loaded file
+                    self.settings.setValue("paths/mpq", old_mpq)
+                    self.settings.setValue("paths/save", old_save)
+                    return
                 self.load_current()
 
     def _confirm_lose_changes(self) -> bool:
@@ -2388,12 +2394,22 @@ class MainWindow(QMainWindow):
                 save_api.discard(p)
             self._update_title()
             return True
-        # Save: commit synchronously here (we're about to close/switch anyway)
-        res = save_api.commit_all()
+        # Save: commit synchronously (modal dialog above keeps the UI blocked);
+        # we need the result before closing/switching.
+        return self._report_save_result(save_api.commit_all())
+
+    def _report_save_result(self, res: dict) -> bool:
+        """Show validator errors on failure; refresh title on success.
+        Returns whether the save succeeded."""
         if not res.get("ok"):
+            errs = []
+            for r in res.get("results", []):
+                if r.get("error"):
+                    errs.append(r["error"])
+                    errs.extend(r.get("details", []) or [])
             QMessageBox.warning(self, "Save failed",
-                                "The edit did not validate and was not written. "
-                                "Resolve the issue or discard to continue.")
+                                "The edit did not validate and was not written:\n\n"
+                                + "\n".join(errs[:20]))
             return False
         self._update_title()
         return True
@@ -2492,18 +2508,8 @@ class MainWindow(QMainWindow):
     def _on_save_done(self, res: dict):
         self.setEnabled(True)
         self._save_progress.close()
-        if not res.get("ok"):
-            errs = []
-            for r in res.get("results", []):
-                if r.get("error"):
-                    errs.append(r["error"])
-                    errs.extend(r.get("details", []) or [])
-            QMessageBox.warning(self, "Save failed",
-                                "The edit did not validate and was not written:\n\n"
-                                + "\n".join(errs[:20]))
-        else:
+        if self._report_save_result(res):
             self.statusBar().showMessage("Saved", 5000)
-        self._update_title()
 
     def render_save(self):
         if not self.loaded:
