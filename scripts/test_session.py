@@ -52,7 +52,7 @@ def test_discard_reloads_disk():
         buf = save_api._read_bytes(path)
         buf[0] ^= 0xFF
         save_api.discard(path)
-        assert path not in save_api.dirty_paths()
+        assert not save_api.dirty_paths(), "session should be empty after discard"
         fresh = save_api._read_bytes(path)
         assert bytes(fresh) == open(path, "rb").read(), "discard must drop the buffer"
         print("PASS discard reloads from disk")
@@ -61,9 +61,29 @@ def test_discard_reloads_disk():
         save_api.reset_session()
 
 
+def test_store_bytes_marks_dirty_and_bumps_revision():
+    save_api.reset_session()
+    path = _tmp_copy()
+    try:
+        buf = save_api._read_bytes(path)
+        assert save_api.revision(path) == 0, "fresh load is revision 0"
+        assert not save_api.dirty_paths(), "fresh load is not dirty"
+        save_api._store_bytes(path, bytes(buf))
+        assert len(save_api.dirty_paths()) == 1, "store must mark exactly one path dirty"
+        assert save_api._session_key(path) in save_api.dirty_paths()
+        assert save_api.revision(path) == 1, "first store bumps revision to 1"
+        save_api._store_bytes(path, bytes(buf))
+        assert save_api.revision(path) == 2, "second store bumps revision to 2"
+        print("PASS store_bytes marks dirty and bumps revision")
+    finally:
+        os.remove(path)
+        save_api.reset_session()
+
+
 def main():
     test_read_bytes_loads_disk_then_buffer()
     test_discard_reloads_disk()
+    test_store_bytes_marks_dirty_and_bumps_revision()
     print("ALL SESSION TESTS PASSED")
 
 

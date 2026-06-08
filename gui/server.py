@@ -340,7 +340,8 @@ def _read_bytes(path: str) -> bytearray:
     key = _session_key(path)
     entry = _SESSION.get(key)
     if entry is None:
-        data = bytearray(open(path, "rb").read())
+        with open(path, "rb") as fh:
+            data = bytearray(fh.read())
         entry = {"data": data, "dirty": False,
                  "kind": "stash" if _is_stash(path, bytes(data)) else "d2s",
                  "rev": 0}
@@ -348,7 +349,7 @@ def _read_bytes(path: str) -> bytearray:
     return entry["data"]
 
 
-def _store_bytes(path: str, data) -> None:
+def _store_bytes(path: str, data: bytes | bytearray) -> None:
     """Replace the buffer for `path`, marking it dirty and bumping its revision."""
     key = _session_key(path)
     entry = _SESSION.get(key)
@@ -370,10 +371,12 @@ def discard(path: str) -> None:
 
 
 def dirty_paths() -> list[str]:
+    """Absolute keys of buffers with unsaved edits."""
     return [k for k, e in _SESSION.items() if e["dirty"]]
 
 
 def revision(path: str) -> int:
+    """Edit revision counter for `path` (0 if not loaded)."""
     entry = _SESSION.get(_session_key(path))
     return entry["rev"] if entry else 0
 
