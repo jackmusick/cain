@@ -2693,7 +2693,7 @@ class MainWindow(QMainWindow):
             return
         if source == self.loaded.path:
             self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Moved stash item — unsaved (Ctrl+S to save)", 7000)
+        self.statusBar().showMessage("Moved stash item — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         if source_combo_idx < self.stash_source.count():
             self.stash_source.setCurrentIndex(source_combo_idx)
@@ -3071,6 +3071,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Copied {item.get('name', 'item')} to stash page {page_idx + 1} — unsaved (Ctrl+S to save)",
             9000)
+        self._update_title()
 
     def copy_selected_to_character(self):
         if not self.loaded:
@@ -3108,6 +3109,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Copied {item.get('name', 'item')} to character inventory — unsaved (Ctrl+S to save)",
             9000)
+        self._update_title()
 
     def copy_selected_section_to_character(self):
         if not self.loaded or self.loaded.data.get("kind") != "character":
@@ -3180,7 +3182,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Character stat edit rejected", res.get("error", "The character stats could not be updated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated character stats — unsaved (Ctrl+S to save)", 7000)
+        self.statusBar().showMessage("Updated character stats — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def save_skills(self, updates: dict):
@@ -3196,7 +3198,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Skill edit rejected", res.get("error", "The skills could not be updated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated skills — unsaved (Ctrl+S to save)", 7000)
+        self.statusBar().showMessage("Updated skills — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def save_waypoints(self, updates: dict):
@@ -3212,7 +3214,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Waypoint edit rejected", res.get("error", "The waypoints could not be updated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated waypoints — unsaved (Ctrl+S to save)", 7000)
+        self.statusBar().showMessage("Updated waypoints — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def save_quests(self, updates: dict):
@@ -3228,7 +3230,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Quest edit rejected", res.get("error", "The quest flags could not be updated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated quest flags — unsaved (Ctrl+S to save)", 7000)
+        self.statusBar().showMessage("Updated quest flags — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def validate_save(self):
