@@ -322,6 +322,7 @@ SKILL_NAME_SWAPS = {
 _gt = None
 _mpq = DEFAULT_MPQ
 _item_meta = None
+_warm_done = False
 
 # --- in-memory edit session -------------------------------------------------
 # path -> {"data": bytearray, "dirty": bool, "kind": "d2s"|"stash", "rev": int}
@@ -930,14 +931,41 @@ def _mpq_status():
 
 
 def set_mpq(path: str):
-    global _gt, _item_meta, _mpq
+    global _gt, _item_meta, _mpq, _warm_done
     path = os.path.abspath(os.path.expanduser(path or ""))
     if not path or not os.path.exists(path):
         return {"ok": False, "error": f"not found: {path}"}
     _mpq = path
     _gt = None
     _item_meta = None
+    _warm_done = False
     return _mpq_status()
+
+
+# the table-derived sets the desktop app reads when opening the Item Editor
+_WARM_BROWSE = ("bases", "stats", "uniques", "sets", "magic_prefixes",
+                "magic_suffixes", "rare_prefixes", "rare_suffixes",
+                "runewords", "socket_fillers")
+
+
+def warm():
+    """Build every table/derived structure the app uses, so later table access
+    is a cache hit. Safe to call on a worker thread; finishes before the UI
+    touches tables()."""
+    global _warm_done
+    gt = tables()
+    gt.build_schema()
+    gt.build_affix_max()
+    gt.build_stat_encoding()
+    gt.stat_table()
+    for kind in _WARM_BROWSE:
+        browse(kind)
+    _warm_done = True
+    return True
+
+
+def is_warm() -> bool:
+    return _warm_done
 
 
 def _pick_with_command(kind: str):

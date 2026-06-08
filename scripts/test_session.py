@@ -166,6 +166,22 @@ def test_commit_rejects_invalid_buffer():
         save_api.reset_session()
 
 
+def test_warm_marks_ready():
+    if not _have_mpq():
+        print("SKIP warm test (no PD2_MPQ)")
+        return
+    save_api.reset_session()
+    assert not save_api.is_warm(), "is_warm() must be False immediately after set_mpq"
+    result = save_api.warm()
+    assert result is True, f"warm() must return True, got {result!r}"
+    assert save_api.is_warm(), "is_warm() must be True after warm()"
+    bases = save_api.browse("bases")
+    assert isinstance(bases, dict), "browse('bases') must return a dict"
+    assert bases.get("bases"), "browse('bases') must return a non-empty 'bases' list"
+    print("PASS warm_marks_ready: is_warm toggles, browse('bases') returns data")
+    save_api.reset_session()
+
+
 def test_edit_then_commit_roundtrip():
     if not _have_mpq():
         print("SKIP roundtrip test (no PD2_MPQ)")
@@ -207,6 +223,7 @@ def main():
     test_gate_and_write_buffers_no_disk()
     test_commit_writes_disk_and_backup()
     test_commit_rejects_invalid_buffer()
+    test_warm_marks_ready()
     test_edit_then_commit_roundtrip()
     print("ALL SESSION TESTS PASSED")
 

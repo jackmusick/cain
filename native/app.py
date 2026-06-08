@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from PySide6.QtCore import QMimeData, QPoint, QRect, QSettings, QSize, Qt, Signal
+from PySide6.QtCore import QMimeData, QPoint, QRect, QSettings, QSize, Qt, QThread, Signal
 from PySide6.QtGui import (
     QAction,
     QBrush,
@@ -2162,6 +2162,17 @@ class SettingsDialog(QDialog):
         super().accept()
 
 
+class _WarmWorker(QThread):
+    done = Signal(bool)
+
+    def run(self):
+        try:
+            save_api.warm()
+            self.done.emit(True)
+        except Exception:  # noqa: BLE001
+            self.done.emit(False)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2364,10 +2375,31 @@ class MainWindow(QMainWindow):
     def load_current(self):
         global ASSETS
         mpq = self.settings.value("paths/mpq", "")
-        path = self.settings.value("paths/save", "")
         try:
             save_api.set_mpq(mpq)
             ASSETS = DiabloAssetLoader(mpq)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Could not load MPQ", str(e))
+            return
+        if save_api.is_warm():
+            self._load_save_now()
+            return
+        self.statusBar().showMessage("Loading game data…")
+        self._warm = _WarmWorker(self)
+        self._warm.done.connect(self._on_warm_done)
+        self._warm.start()
+
+    def _on_warm_done(self, ok: bool):
+        if not ok:
+            QMessageBox.critical(self, "Could not load game data",
+                                 "Failed to read tables from the MPQ.")
+            return
+        self.statusBar().clearMessage()
+        self._load_save_now()
+
+    def _load_save_now(self):
+        path = self.settings.value("paths/save", "")
+        try:
             data = save_api.parse_save(path)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Could not load save", str(e))
