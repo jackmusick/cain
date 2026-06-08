@@ -1,0 +1,5 @@
+# Runtime: the core codec is stdlib-only, but the real app is native Qt.
+PySide6>=6.6
+
+# Build a single double-clickable executable (dev-time only):
+pyinstaller>=6.0
