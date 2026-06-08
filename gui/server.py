@@ -277,9 +277,9 @@ CLASS_NAMES = {
     4: "Barbarian", 5: "Druid", 6: "Assassin",
 }
 SKILL_TAB_NAMES = {
-    (0, 0): "Javelin and Spear Skills",
+    (0, 0): "Bow and Crossbow Skills",
     (0, 1): "Passive and Magic Skills",
-    (0, 2): "Bow and Crossbow Skills",
+    (0, 2): "Javelin and Spear Skills",
     (1, 0): "Fire Skills",
     (1, 1): "Lightning Skills",
     (1, 2): "Cold Skills",
@@ -295,10 +295,14 @@ SKILL_TAB_NAMES = {
     (5, 0): "Summoning Skills",
     (5, 1): "Shape Shifting Skills",
     (5, 2): "Elemental Skills",
-    (6, 0): "Martial Arts",
+    (6, 0): "Traps",
     (6, 1): "Shadow Disciplines",
-    (6, 2): "Traps",
+    (6, 2): "Martial Arts",
 }
+# Save param for item_addskill_tab packs (charclass << 3) | within-class tab index
+# (0,1,2 = the class's tabs in skill-page order). UniqueItems/Properties instead
+# use the global skilltab id (class*3 + tab). Verified against in-game items:
+# Amazon Bow/Crossbow = param 0, Assassin Martial Arts = param 50 (6<<3 | 2).
 ELEMENT_SKILLS = {
     0: "Fire Skills",
     1: "Lightning Skills",
@@ -1544,11 +1548,15 @@ def browse(kind):
         return {"stats": out}
     if kind == "uniques":
         out = []
+        strings = game_strings()
         for i, r in enumerate(gt.load_table("UniqueItems")):
-            name = (r.get("index", "") or r.get("name", "")).strip()
+            index = (r.get("index", "") or r.get("name", "")).strip()
             code = r.get("code", "").strip()
-            if not name or not code:
+            if not index or not code:
                 continue
+            # the index ("Cutthroat1") is a string-table key; resolve it to the
+            # real display name ("Bartuc's Cut-Throat"), falling back to the index.
+            name = strings.get(index.lower(), index) or index
             out.append({
                 "id": i, "name": name, "code": code,
                 "level": _int(r.get("lvl", "")),
@@ -1559,11 +1567,13 @@ def browse(kind):
         return {"uniques": out}
     if kind == "sets":
         out = []
+        strings = game_strings()
         for i, r in enumerate(gt.load_table("SetItems")):
-            name = (r.get("index", "") or r.get("name", "")).strip()
+            index = (r.get("index", "") or r.get("name", "")).strip()
             code = r.get("item", "").strip()
-            if not name or not code:
+            if not index or not code:
                 continue
+            name = strings.get(index.lower(), index) or index
             out.append({
                 "id": i, "name": name, "set": r.get("set", "").strip(),
                 "code": code, "level": _int(r.get("lvl", "")),
@@ -1959,6 +1969,17 @@ def _simple_stats_from_specs(specs: list[dict], version: int, gt: GameTables):
             # The simple functions use min/max as the stat value. More complex
             # property functions are handled explicitly below when their D2 item
             # stat packing is well understood.
+            if func == 10 and stat_name:
+                # skill tab (e.g. Bartuc's "+2 Martial Arts"). The property's par
+                # is the GLOBAL skilltab id (class*3 + tab); the saved stat packs
+                # it as (class << 3) | tab. Convert so it serializes correctly.
+                tab = _int(param, -1)
+                if tab >= 0:
+                    save_param = (tab // 3) * 8 + (tab % 3)
+                    stat = _item_stat_with_param(stat_name, value, save_param, version, gt)
+                    if stat:
+                        stats.append(stat)
+                continue
             if func == 21 and stat_name:
                 # class-specific skills (e.g. "+2 to Assassin Skills"): the class
                 # lives in the property's val1 column (ama=0, sor=1, nec=2, pal=3,
