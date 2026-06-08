@@ -1816,29 +1816,57 @@ def _finalize(data: bytearray):
     struct.pack_into("<I", data, 0x0C, compute_checksum_d2(bytes(data)))
 
 
-def _gate_and_write(data: bytearray, path: str):
-    """Validate, back up the original, then save in place."""
+def _gate_and_write(data, path: str):
+    """Apply an edit to the in-memory buffer. No disk write, no backup, no
+    validation here — validation is debounced in the UI and run authoritatively
+    by commit_save()."""
+    _store_bytes(path, data)
+    return {"ok": True, "out": path, "pending": True}
+
+
+def _gate_and_write_stash(data, path: str):
+    _store_bytes(path, data)
+    return {"ok": True, "out": path, "pending": True}
+
+
+def validate_buffer(path: str):
+    """Validate the in-memory buffer for `path` without writing. Returns
+    {"ok": True} or {"ok": False, "errors": [...]}. Requires tables (MPQ)."""
     st = tables().stat_table()
-    res = validate_mod.validate_d2s(bytes(data), st)
-    if not res.ok:
+    data = bytes(_read_bytes(path))
+    entry = _SESSION.get(_session_key(path))
+    kind = entry["kind"] if entry else ("stash" if _is_stash(path, data) else "d2s")
+    res = (validate_mod.validate_stash(data, st) if kind == "stash"
+           else validate_mod.validate_d2s(data, st))
+    return {"ok": res.ok, "errors": list(res.errors)}
+
+
+def commit_save(path: str):
+    """Validate the buffer, back up the original, write to disk, clear dirty."""
+    key = _session_key(path)
+    entry = _SESSION.get(key)
+    if entry is None or not entry["dirty"]:
+        return {"ok": True, "out": path, "nothing_to_do": True}
+    v = validate_buffer(path)
+    if not v["ok"]:
         return {"error": "edit rejected by validator (would not load)",
-                "details": res.errors}
+                "details": v["errors"], "path": path}
     backup = _backup_original(path)
     with open(path, "wb") as f:
-        f.write(bytes(data))
+        f.write(bytes(entry["data"]))
+    entry["dirty"] = False
     return {"ok": True, "out": path, "backup": backup, "validated": True}
 
 
-def _gate_and_write_stash(data: bytes, path: str):
-    st = tables().stat_table()
-    res = validate_mod.validate_stash(bytes(data), st)
-    if not res.ok:
-        return {"error": "edit rejected by stash validator",
-                "details": res.errors}
-    backup = _backup_original(path)
-    with open(path, "wb") as f:
-        f.write(bytes(data))
-    return {"ok": True, "out": path, "backup": backup, "validated": True}
+def commit_all():
+    """Save every dirty buffer. Aggregates results; the single Save action."""
+    results = []
+    ok = True
+    for path in list(dirty_paths()):
+        r = commit_save(path)
+        results.append(r)
+        ok = ok and bool(r.get("ok"))
+    return {"ok": ok, "results": results}
 
 
 def _stat_edit_bounds(stat):

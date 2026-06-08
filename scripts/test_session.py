@@ -80,10 +80,69 @@ def test_store_bytes_marks_dirty_and_bumps_revision():
         save_api.reset_session()
 
 
+def path_in_dirty(path):
+    return os.path.abspath(os.path.expanduser(path)) in save_api.dirty_paths()
+
+
+def _have_mpq():
+    mpq = os.environ.get("PD2_MPQ", "")
+    if mpq and os.path.exists(mpq):
+        save_api.set_mpq(mpq)
+        return True
+    return False
+
+
+def test_gate_and_write_buffers_no_disk():
+    save_api.reset_session()
+    path = _tmp_copy()
+    try:
+        disk = open(path, "rb").read()
+        save_api._read_bytes(path)                 # register buffer
+        edited = bytearray(disk)
+        edited[16] ^= 0xFF                          # arbitrary byte change
+        res = save_api._gate_and_write(edited, path)
+        assert res.get("ok"), res
+        assert path_in_dirty(path), "edit must mark the path dirty"
+        assert open(path, "rb").read() == disk, "edit must NOT write disk"
+        assert bytes(save_api._read_bytes(path)) == bytes(edited), "buffer must hold the edit"
+        backups = os.path.join(os.path.dirname(path), "backups")
+        assert not os.path.isdir(backups), "edits must not create backups"
+        print("PASS _gate_and_write buffers the edit without disk/backup")
+    finally:
+        os.remove(path)
+        save_api.reset_session()
+
+
+def test_commit_writes_disk_and_backup():
+    if not _have_mpq():
+        print("SKIP commit test (no PD2_MPQ)")
+        return
+    save_api.reset_session()
+    path = _tmp_copy()
+    try:
+        buf = save_api._read_bytes(path)
+        save_api._gate_and_write(bytearray(buf), path)   # dirty but identical+valid
+        res = save_api.commit_all()
+        assert res.get("ok"), res
+        assert not save_api.dirty_paths(), "commit must clear dirty"
+        backups = os.path.join(os.path.dirname(path), "backups")
+        baks = os.listdir(backups) if os.path.isdir(backups) else []
+        assert len(baks) == 1, f"commit must make exactly one backup, got {baks}"
+        assert bytes(save_api._read_bytes(path)) == open(path, "rb").read(), \
+            "disk must equal the committed buffer"
+        print("PASS commit_all writes disk + one backup, clears dirty")
+    finally:
+        shutil.rmtree(os.path.join(os.path.dirname(path), "backups"), ignore_errors=True)
+        os.remove(path)
+        save_api.reset_session()
+
+
 def main():
     test_read_bytes_loads_disk_then_buffer()
     test_discard_reloads_disk()
     test_store_bytes_marks_dirty_and_bumps_revision()
+    test_gate_and_write_buffers_no_disk()
+    test_commit_writes_disk_and_backup()
     print("ALL SESSION TESTS PASSED")
 
 
