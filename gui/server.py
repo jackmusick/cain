@@ -1825,17 +1825,17 @@ def _gate_and_write(data, path: str):
 
 
 def _gate_and_write_stash(data, path: str):
-    _store_bytes(path, data)
-    return {"ok": True, "out": path, "pending": True}
+    """Stash edits buffer the same way as character edits; kept as a named
+    call site for the stash do_* handlers."""
+    return _gate_and_write(data, path)
 
 
 def validate_buffer(path: str):
     """Validate the in-memory buffer for `path` without writing. Returns
     {"ok": True} or {"ok": False, "errors": [...]}. Requires tables (MPQ)."""
     st = tables().stat_table()
-    data = bytes(_read_bytes(path))
-    entry = _SESSION.get(_session_key(path))
-    kind = entry["kind"] if entry else ("stash" if _is_stash(path, data) else "d2s")
+    data = bytes(_read_bytes(path))   # ensures the entry exists
+    kind = _SESSION[_session_key(path)]["kind"]
     res = (validate_mod.validate_stash(data, st) if kind == "stash"
            else validate_mod.validate_d2s(data, st))
     return {"ok": res.ok, "errors": list(res.errors)}
@@ -1847,13 +1847,16 @@ def commit_save(path: str):
     entry = _SESSION.get(key)
     if entry is None or not entry["dirty"]:
         return {"ok": True, "out": path, "nothing_to_do": True}
+    payload = bytes(entry["data"])   # snapshot; assumes single writer (Qt UI is
+                                     # disabled during save) — validate & write the
+                                     # same bytes
     v = validate_buffer(path)
     if not v["ok"]:
-        return {"error": "edit rejected by validator (would not load)",
+        return {"ok": False, "error": "edit rejected by validator (would not load)",
                 "details": v["errors"], "path": path}
     backup = _backup_original(path)
     with open(path, "wb") as f:
-        f.write(bytes(entry["data"]))
+        f.write(payload)
     entry["dirty"] = False
     return {"ok": True, "out": path, "backup": backup, "validated": True}
 

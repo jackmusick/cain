@@ -137,12 +137,42 @@ def test_commit_writes_disk_and_backup():
         save_api.reset_session()
 
 
+def test_commit_rejects_invalid_buffer():
+    if not _have_mpq():
+        print("SKIP reject test (no PD2_MPQ)")
+        return
+    save_api.reset_session()
+    path = _tmp_copy()
+    try:
+        disk = open(path, "rb").read()
+        save_api._read_bytes(path)
+        # Flip an in-range name byte: stays classified d2s, fails validation
+        # (checksum mismatch) without raising.
+        corrupted = bytearray(disk)
+        corrupted[0x10] = 0x21
+        save_api._store_bytes(path, corrupted)
+        assert not save_api.validate_buffer(path)["ok"], \
+            "chosen corruption must fail validation"
+        res = save_api.commit_all()
+        assert not res.get("ok"), f"commit must reject invalid buffer, got {res}"
+        assert path_in_dirty(path), "rejection must leave the path dirty"
+        assert open(path, "rb").read() == disk, "rejected commit must NOT write disk"
+        backups = os.path.join(os.path.dirname(path), "backups")
+        assert not os.path.isdir(backups), "rejected commit must not create backups"
+        print("PASS commit_all rejects invalid buffer (no write, stays dirty)")
+    finally:
+        shutil.rmtree(os.path.join(os.path.dirname(path), "backups"), ignore_errors=True)
+        os.remove(path)
+        save_api.reset_session()
+
+
 def main():
     test_read_bytes_loads_disk_then_buffer()
     test_discard_reloads_disk()
     test_store_bytes_marks_dirty_and_bumps_revision()
     test_gate_and_write_buffers_no_disk()
     test_commit_writes_disk_and_backup()
+    test_commit_rejects_invalid_buffer()
     print("ALL SESSION TESTS PASSED")
 
 
