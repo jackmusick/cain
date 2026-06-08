@@ -2186,7 +2186,7 @@ class _SaveWorker(QThread):
 
 
 class _ValidateWorker(QThread):
-    done = Signal(int, dict)   # (revision-validated, result)
+    done = Signal(str, int, dict)   # (path, revision-validated, result)
 
     def __init__(self, path: str, rev: int, parent=None):
         super().__init__(parent)
@@ -2198,7 +2198,7 @@ class _ValidateWorker(QThread):
             res = save_api.validate_buffer(self._path)
         except Exception as e:  # noqa: BLE001
             res = {"ok": False, "errors": [str(e)]}
-        self.done.emit(self._rev, res)
+        self.done.emit(self._path, self._rev, res)
 
 
 class MainWindow(QMainWindow):
@@ -2221,6 +2221,7 @@ class MainWindow(QMainWindow):
         self._last_rev = 0
         self._validated_rev = 0
         self._validating = False
+        self._validation_errors: list[str] = []
         self._poll = QTimer(self)
         self._poll.setInterval(250)
         self._poll.timeout.connect(self._poll_tick)
@@ -2382,7 +2383,6 @@ class MainWindow(QMainWindow):
         self.validation_banner.setVisible(False)
         self.validation_banner.setCursor(Qt.PointingHandCursor)
         self.validation_banner.mousePressEvent = lambda _e: self._show_validation_details()
-        self._validation_errors: list[str] = []
 
         central = QWidget()
         central_layout = QVBoxLayout(central)
@@ -2550,8 +2550,11 @@ class MainWindow(QMainWindow):
                 self._validator.start()
         self._last_rev = rev
 
-    def _on_validated(self, rev: int, res: dict):
+    def _on_validated(self, path: str, rev: int, res: dict):
         self._validating = False
+        # discard results from a worker started for a now-unloaded/different file
+        if not self.loaded or path != self.loaded.path:
+            return
         self._validated_rev = rev
         if res.get("ok"):
             self._validation_errors = []
