@@ -1418,7 +1418,7 @@ def _character_item_sections(data: bytes, st):
 
 
 def parse_save(path):
-    data = open(path, "rb").read()
+    data = bytes(_read_bytes(path))
     st = tables().stat_table()
     if _is_stash(path, data):
         s = stash_mod.parse_stash(data, st)
@@ -1503,7 +1503,7 @@ def character_summary(path: str) -> dict:
     -100) are left to the caller, since the save stores mods, not totals."""
     try:
         save = parse_save(path)
-        data = open(path, "rb").read()
+        data = bytes(_read_bytes(path))
     except Exception as e:  # noqa: BLE001 — contract is "always JSON, never crash"
         return {"error": f"{type(e).__name__}: {e}"}
     if save.get("kind") != "character":
@@ -2224,7 +2224,7 @@ def do_edit(body):
     path, idx = body["path"], int(body["item"])
     stat_id, value = int(body["stat_id"]), int(body["value"])
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     it = items[idx]
     try:
@@ -2245,7 +2245,7 @@ def do_maxroll(body):
     path, idx = body["path"], int(body["item"])
     st = tables().stat_table()
     gt = tables()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     it = items[idx]
     maxed = 0
@@ -2373,7 +2373,7 @@ def do_edititem(body):
     """Edit core item properties and simple/grouped item stats, then validate."""
     path, idx = body["path"], int(body["item"])
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2396,7 +2396,7 @@ def do_unsocketitem(body):
     """Remove socketed child items from a character item and validate the save."""
     path, idx = body["path"], int(body["item"])
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2428,7 +2428,7 @@ def do_socketitem(body):
     if code not in fillers:
         return {"error": f"{code} is not a rune, gem, or jewel filler"}
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2514,7 +2514,7 @@ def do_deleteitem(body):
     """Delete one top-level character item, including socketed children."""
     path, idx = body["path"], int(body["item"])
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2534,7 +2534,7 @@ def do_duplicateitem(body):
     """Duplicate one character item into the first free inventory location."""
     path, idx = body["path"], int(body["item"])
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2563,7 +2563,7 @@ def do_duplicateitem(body):
 def do_editchar(body):
     path = body["path"]
     updates = body.get("stats", {})
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     start, end, entries, _values = _char_stat_block(bytes(data))
     by_key = {entry["key"]: entry for entry in entries}
     changed = {}
@@ -2608,7 +2608,7 @@ def do_editchar(body):
 def do_editskills(body):
     path = body["path"]
     updates = body.get("skills", {})
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, end, skills = _skill_block(bytes(data))
     by_id = {int(skill["id"]): skill for skill in skills}
     by_index = {int(skill["index"]): skill for skill in skills}
@@ -2637,7 +2637,7 @@ def do_editskills(body):
 def do_editwaypoints(body):
     path = body["path"]
     updates = body.get("waypoints", {})
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     _off, _size, records = _waypoint_block(bytes(data))
     changed = {}
     for diff_key, value in updates.items():
@@ -2671,7 +2671,7 @@ def do_editwaypoints(body):
 def do_editquests(body):
     path = body["path"]
     updates = body.get("quests", {})
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     _off, _size, records = _quest_block(bytes(data))
     changed = {}
     for diff_key, values in updates.items():
@@ -2773,7 +2773,7 @@ def do_moveitem(body):
     """Move a character item to an inventory grid position and validate the save."""
     path, idx = body["path"], int(body["item"])
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2837,7 +2837,7 @@ def do_equipitem(body):
     if slot not in EQUIP_SLOTS:
         return {"error": f"unknown equipment slot {slot}"}
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2921,7 +2921,7 @@ def do_movestashitem(body):
     page_idx, item_idx = int(body["page"]), int(body["item"])
     x, y = int(body["x"]), int(body["y"])
     st = tables().stat_table()
-    raw = open(path, "rb").read()
+    raw = bytes(_read_bytes(path))
     stash = stash_mod.parse_stash(raw, st)
     pages = _stash_page_list(stash)
     if page_idx < 0 or page_idx >= len(pages):
@@ -2954,12 +2954,12 @@ def do_copyitemtostash(body):
     idx = int(body["item"])
     page_idx = int(body.get("page", 0))
     st = tables().stat_table()
-    char_raw = open(char_path, "rb").read()
+    char_raw = bytes(_read_bytes(char_path))
     _off, _pcount, char_items, _pend = _walk_player(char_raw, st)
     if idx < 0 or idx >= len(char_items):
         return {"error": f"item index out of range: {idx}"}
 
-    stash_raw = open(stash_path, "rb").read()
+    stash_raw = bytes(_read_bytes(stash_path))
     stash = stash_mod.parse_stash(stash_raw, st)
     pages = _stash_page_list(stash)
     if page_idx < 0 or page_idx >= len(pages):
@@ -3011,7 +3011,7 @@ def do_copystashitemtochar(body):
     item_idx = int(body["item"])
     st = tables().stat_table()
 
-    stash_raw = open(stash_path, "rb").read()
+    stash_raw = bytes(_read_bytes(stash_path))
     stash = stash_mod.parse_stash(stash_raw, st)
     pages = _stash_page_list(stash)
     if page_idx < 0 or page_idx >= len(pages):
@@ -3020,7 +3020,7 @@ def do_copystashitemtochar(body):
     if item_idx < 0 or item_idx >= len(stash_items):
         return {"error": f"stash item out of range: {item_idx}"}
 
-    data = bytearray(open(char_path, "rb").read())
+    data = bytearray(_read_bytes(char_path))
     off, pcount, char_items, pend = _walk_player(bytes(data), st)
     new = copy.deepcopy(stash_items[item_idx])
     try:
@@ -3053,7 +3053,7 @@ def do_copysectionitemtochar(body):
     if not section_id or section_id == "player":
         return {"error": "choose a mercenary, corpse, or golem section item"}
     st = tables().stat_table()
-    data = bytearray(open(char_path, "rb").read())
+    data = bytearray(_read_bytes(char_path))
     sections = _character_item_sections(bytes(data), st)
     source = next((sec for sec in sections if sec.get("id") == section_id), None)
     if source is None:
@@ -3095,7 +3095,7 @@ def do_editsectionitem(body):
     if not section_id or section_id == "player":
         return {"error": "choose a mercenary, corpse, or golem section item"}
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     sections = _character_item_sections(bytes(data), st)
     section = next((sec for sec in sections if sec.get("id") == section_id), None)
     if section is None:
@@ -3137,7 +3137,7 @@ def do_additem(body):
     want_stats = body.get("stats", [])  # [{stat_id, value}]
     st = tables().stat_table()
     gt = tables()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
 
     # Use an existing clean item of the same broad kind as a structural skeleton,

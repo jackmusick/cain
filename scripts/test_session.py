@@ -166,6 +166,38 @@ def test_commit_rejects_invalid_buffer():
         save_api.reset_session()
 
 
+def test_edit_then_commit_roundtrip():
+    if not _have_mpq():
+        print("SKIP roundtrip test (no PD2_MPQ)")
+        return
+    save_api.reset_session()
+    path = _tmp_copy()
+    try:
+        save = save_api.parse_save(path)
+        assert save.get("kind") == "character", save.get("kind")
+        items = save.get("items", [])
+        dup_idx = next(i for i, it in enumerate(items) if it.get("clean"))
+        before = len(items)
+        res = save_api.do_duplicateitem({"path": path, "item": dup_idx})
+        assert res.get("ok"), res
+        # the duplicate is visible WITHOUT any disk write
+        assert path_in_dirty(path), "duplicate must dirty the buffer"
+        reparsed = save_api.parse_save(path)              # reads the BUFFER
+        assert len(reparsed["items"]) == before + 1, "duplicate must be visible in-memory"
+        assert open(path, "rb").read() == open(FIXTURE, "rb").read(), "disk untouched pre-commit"
+        # commit, then the new on-disk file re-parses with the extra item and validates
+        assert save_api.commit_all().get("ok")
+        save_api.reset_session()
+        final = save_api.parse_save(path)
+        assert len(final["items"]) == before + 1, "committed file must hold the duplicate"
+        assert save_api.validate_buffer(path)["ok"], "committed file must validate"
+        print("PASS edit reads/writes the buffer; commit persists a valid file")
+    finally:
+        shutil.rmtree(os.path.join(os.path.dirname(path), "backups"), ignore_errors=True)
+        os.remove(path)
+        save_api.reset_session()
+
+
 def main():
     test_read_bytes_loads_disk_then_buffer()
     test_discard_reloads_disk()
@@ -173,6 +205,7 @@ def main():
     test_gate_and_write_buffers_no_disk()
     test_commit_writes_disk_and_backup()
     test_commit_rejects_invalid_buffer()
+    test_edit_then_commit_roundtrip()
     print("ALL SESSION TESTS PASSED")
 
 
