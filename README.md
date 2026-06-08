@@ -15,29 +15,32 @@ without code changes. Only the container formats are hardcoded.
 - For a packaged executable: `pip install PySide6 pyinstaller`
 - The game's `pd2data.mpq` (from your PD2 install) reachable on disk
 
-## Run it
+## Install it (Linux — recommended)
+```sh
+./install.sh
+```
+User-local, no sudo: creates a private venv under `~/.local/share/cain`, installs
+`cain` (the desktop app) and `cain-cli` (the read/verify CLI) into `~/.local/bin`,
+and adds a **Cain** app-menu launcher with a Diablo-like icon. Re-run after a
+`git pull` to update. Then launch from your app menu or run `cain`. On first run,
+choose `pd2data.mpq` and a character/stash save; the app remembers both.
 
-### Native desktop app
+To uninstall: `rm -rf ~/.local/share/cain ~/.local/bin/cain ~/.local/bin/cain-cli ~/.local/share/applications/cain.desktop`.
+
+### Run from source (no install)
 ```sh
 pip install PySide6
 python3 native/app.py
 ```
-On first run, choose `pd2data.mpq` and a character/stash save. The app remembers
-both paths in native settings and starts directly next time.
 
-### Or as a single double-clickable executable
+### Single double-clickable executable (PyInstaller, optional)
 ```sh
 pip install PySide6 pyinstaller
 python3 build.py             # -> dist/Cain(.exe), one file
 ```
 Run `build.py` on each OS you want a binary for (PyInstaller doesn't cross-compile:
-Windows .exe, Linux ELF, macOS .app).
-
-On Linux, install the built executable into your app launcher with the included
-Diablo-like icon:
-```sh
-scripts/install-linux-desktop.sh
-```
+Windows .exe, Linux ELF, macOS .app). `scripts/install-linux-desktop.sh` installs
+that built binary into the app menu instead of the venv launcher.
 
 ### Legacy browser prototype
 ```sh

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cain"
+version = "0.1.0"
+description = "Cain — a modern, multi-game Diablo II / Project Diablo 2 save editor"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Jack Musick" }]
+# The codec + CLI are stdlib-only; the desktop app needs Qt.
+dependencies = ["PySide6>=6.6"]
+keywords = ["diablo", "diablo2", "projectdiablo2", "pd2", "save-editor", "d2s"]
+
+[project.scripts]
+cain = "native.app:main"       # the desktop app (default launcher)
+cain-cli = "cli.cain:main"     # headless read/verify CLI (character JSON, etc.)
+
+# The repo keeps game-domain code in top-level dirs rather than one package,
+# so install each as its own importable package (matches the in-repo imports
+# `from core...`, `from gui import server`, etc.).
+[tool.setuptools.packages.find]
+include = ["core*", "cli*", "gui*", "native*"]
