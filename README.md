@@ -1,4 +1,4 @@
-# Save Editor — a modern, multi-game Diablo II save editor
+# Cain — a modern, multi-game Diablo II save editor
 
 A cross-platform save editor for Diablo II / LoD and mods (built and verified
 against **Project Diablo 2, Season 13**). Reads & writes characters (`.d2s`),
@@ -28,7 +28,7 @@ both paths in native settings and starts directly next time.
 ### Or as a single double-clickable executable
 ```sh
 pip install PySide6 pyinstaller
-python3 build.py             # -> dist/SaveEditor(.exe), one file
+python3 build.py             # -> dist/Cain(.exe), one file
 ```
 Run `build.py` on each OS you want a binary for (PyInstaller doesn't cross-compile:
 Windows .exe, Linux ELF, macOS .app).
@@ -65,11 +65,32 @@ python3 gui/app.py
 
 ## CLI
 ```sh
-python3 cli/d2edit.py --mpq <pd2data.mpq> info     <save.d2s>
-python3 cli/d2edit.py --mpq <pd2data.mpq> items    <save.d2s>
-python3 cli/d2edit.py --mpq <pd2data.mpq> validate <save.d2s>   # exit 0=loadable
-python3 cli/d2edit.py --mpq <pd2data.mpq> verify-v2 <save.d2s>  # byte-exact round-trip
-python3 cli/d2edit.py --mpq <pd2data.mpq> verify-stash <stash>
+python3 cli/cain.py --mpq <pd2data.mpq> character <save.d2s>  # full character as JSON
+python3 cli/cain.py --mpq <pd2data.mpq> info      <save.d2s>
+python3 cli/cain.py --mpq <pd2data.mpq> items     <save.d2s>
+python3 cli/cain.py --mpq <pd2data.mpq> validate  <save.d2s>  # exit 0=loadable
+python3 cli/cain.py --mpq <pd2data.mpq> verify-v2 <save.d2s>  # byte-exact round-trip
+python3 cli/cain.py --mpq <pd2data.mpq> verify-stash <stash>
+```
+
+`--mpq` can be omitted when `$PD2_MPQ` is set or the install is auto-detected.
+
+### `character` — read-only JSON for LLM build review
+`character` emits a flat, JSON view of a `.d2s`: `identity` (name/class/level/
+hardcore/difficulty progress), `attributes`, allocated `skills`, `equipped` gear
+(resolved names + human-readable stat lines), and `inventory` (charms, cube, belt
+— charms count toward resists). It's read-only and reuses the same decode the
+desktop app uses. Resist/breakpoint totals are left to the caller: the save
+stores mods, not game-computed totals (see the `notes` field).
+
+## Claude skill: PD2 build advisor
+`skills/pd2-build-advisor/SKILL.md` is a bundled, read-only Claude skill. It runs
+`cain character`, computes effective resists (gear + charms minus the difficulty
+penalty: Normal 0 / Nightmare −40 / Hell −100), cross-references the Project
+Diablo 2 wiki, and gives concrete gear/skill advice. Install it for Claude Code by
+symlinking it into your skills directory, e.g.:
+```sh
+ln -s "$PWD/skills/pd2-build-advisor" ~/.claude/skills/pd2-build-advisor
 ```
 
 ## Important gotcha
@@ -85,8 +106,10 @@ core/     codec + tables + validator (no UI)
   tables.py    live schema from pd2data.mpq
   validate.py  the no-corruption gate
   mpq.py       pure-Python MPQ reader (PKWARE-DCL)
-cli/      headless commands
-gui/      stdlib web GUI (server.py)
+cli/      headless commands (cain.py)
+gui/      stdlib web GUI + headless backend (server.py)
+native/   native Qt desktop app (the primary editor)
+skills/   bundled Claude skill (pd2-build-advisor)
 testdata/ sample saves
 ```
 

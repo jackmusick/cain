@@ -1,5 +1,5 @@
 """
-Cross-platform web GUI for the multi-game save editor.
+Cross-platform web GUI + headless backend for Cain (the multi-game save editor).
 
 Stdlib-only HTTP server (identical on Linux/Win/mac, no deps). Serves a single-
 page app + JSON API over the PROVEN modern stack:
@@ -1359,6 +1359,121 @@ def parse_save(path):
                 "items": [item_to_dict(it) for it in sec.get("items", [])],
             }
             for sec in sections
+        ],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Character summary (read-only, LLM/CLI-friendly flattening of parse_save)
+# --------------------------------------------------------------------------- #
+_EQUIP_SLOT_ORDER = ["Head", "Amulet", "Armor", "Right Hand", "Left Hand",
+                     "Belt", "Right Ring", "Left Ring", "Gloves", "Boots",
+                     "Alt Right", "Alt Left"]
+
+
+def _item_stat_texts(it: dict) -> list[str]:
+    """All human-readable stat lines for an item: its own stats, runeword
+    stats, and any socketed-item stats (the things actually on the gear)."""
+    texts = []
+    for s in it.get("stats", []) or []:
+        if s.get("text"):
+            texts.append(s["text"])
+    for s in it.get("runeword_stats", []) or []:
+        if s.get("text"):
+            texts.append(s["text"])
+    for sock in it.get("sockets", []) or []:
+        for s in sock.get("stats", []) or []:
+            if s.get("text"):
+                texts.append(s["text"])
+    return texts
+
+
+def character_summary(path: str) -> dict:
+    """A flat, JSON-clean view of a character for an LLM or CLI: identity,
+    attributes, allocated skills, and equipped gear with resolved names and
+    human-readable stat lines. Read-only; reuses parse_save's tested decode.
+
+    Resists are reported as per-item gear lines only — effective resist totals
+    (sum of gear/charms, minus the difficulty penalty Normal 0 / NM -40 / Hell
+    -100) are left to the caller, since the save stores mods, not totals."""
+    try:
+        save = parse_save(path)
+        data = open(path, "rb").read()
+    except Exception as e:  # noqa: BLE001 — contract is "always JSON, never crash"
+        return {"error": f"{type(e).__name__}: {e}"}
+    if save.get("kind") != "character":
+        return {"error": f"not a character (.d2s) save; got '{save.get('kind')}'"}
+    cs = (save.get("character_stats") or {}).get("values", {})
+
+    attributes = {
+        "strength": cs.get("strength", 0),
+        "dexterity": cs.get("dexterity", 0),
+        "vitality": cs.get("vitality", 0),
+        "energy": cs.get("energy", 0),
+        "life": cs.get("current_life", 0), "max_life": cs.get("max_life", 0),
+        "mana": cs.get("current_mana", 0), "max_mana": cs.get("max_mana", 0),
+        "stamina": cs.get("current_stamina", 0),
+        "max_stamina": cs.get("max_stamina", 0),
+        "unspent_stat_points": cs.get("stat_points", 0),
+        "unspent_skill_points": cs.get("skill_points", 0),
+        "experience": cs.get("experience", 0),
+        "gold": cs.get("gold", 0), "gold_stash": cs.get("stash_gold", 0),
+    }
+
+    skills = [
+        {"id": s.get("id"), "name": s.get("name"), "level": s.get("level")}
+        for s in (save.get("skills") or {}).get("skills", [])
+        if s.get("level")
+    ]
+
+    equipped = []
+    inventory = []
+    for it in save.get("items", []):
+        entry = {
+            "name": it.get("name"),
+            "base": it.get("base_name"),
+            "quality": "runeword" if it.get("runeword") else it.get("quality"),
+            "ethereal": bool(it.get("ethereal")),
+            "sockets": it.get("num_sockets", 0),
+            "stats": _item_stat_texts(it),
+        }
+        if it.get("location") == 1:  # 1 == equipped on body
+            entry["slot"] = EQUIP_SLOTS.get(it.get("equipped_id"),
+                                            f"Slot {it.get('equipped_id')}")
+            equipped.append(entry)
+        else:
+            # charms, cube contents, belt, etc. — carried but not worn. Charms
+            # here contribute to effective resists; potions etc. carry no stats.
+            inventory.append(entry)
+    order = {name: i for i, name in enumerate(_EQUIP_SLOT_ORDER)}
+    equipped.sort(key=lambda e: order.get(e["slot"], 99))
+
+    difficulty_progress = {}
+    try:
+        for d in character_quests(data).get("difficulties", []):
+            started = any(q.get("flags") for q in d.get("quests", []))
+            difficulty_progress[d["name"].lower()] = started
+    except Exception:  # noqa: BLE001 — progress is best-effort metadata
+        difficulty_progress = {}
+
+    return {
+        "identity": {
+            "name": save.get("name"),
+            "class": save.get("class"),
+            "level": save.get("level"),
+            "version": save.get("version"),
+            "hardcore": bool(data[0x24] & 0x04),
+            "difficulty_progress": difficulty_progress,
+        },
+        "attributes": attributes,
+        "skills": skills,
+        "equipped": equipped,
+        "inventory": inventory,
+        "notes": [
+            "Resist lines under each item are per-item gear mods only.",
+            "Effective resist = sum of gear + charm mods (charms are NOT in "
+            "'equipped'; they sit in inventory), capped at 75 base, minus the "
+            "difficulty penalty: Normal 0, Nightmare -40, Hell -100.",
         ],
     }
 
@@ -3130,7 +3245,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 SPA = r"""<!doctype html><html><head><meta charset=utf-8>
-<title>Save Editor</title>
+<title>Cain</title>
 <style>
  :root{--bg:#14141a;--panel:#1e1e26;--panel2:#262630;--gold:#c8a45c;--line:#33333e;--txt:#d8d8de}
  *{box-sizing:border-box}
@@ -3183,7 +3298,7 @@ SPA = r"""<!doctype html><html><head><meta charset=utf-8>
  #builder label{font-size:11px;color:#999;display:flex;flex-direction:column;gap:3px}
 </style></head><body>
 <header>
- <h1>&#9876; Save Editor</h1>
+ <h1>&#9876; Cain</h1>
  <button onclick="toggleBuilder()">+ Add Item</button>
  <button onclick="validate()">Validate</button>
  <span style="margin-left:auto;color:#666;font-size:12px">writes to *.edited (source untouched)</span>
@@ -3384,7 +3499,7 @@ def main():
         elif a == "--mpq":
             _mpq = args[i + 1]
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"Save Editor GUI on http://localhost:{port}  (mpq={_mpq})")
+    print(f"Cain GUI on http://localhost:{port}  (mpq={_mpq})")
     srv.serve_forever()
 
 

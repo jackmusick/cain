@@ -2,8 +2,8 @@
 
 
 a = Analysis(
-    ['/home/jack/Sync/save-editor/native/app.py'],
-    pathex=['/home/jack/Sync/save-editor'],
+    ['/home/jack/GitHub/Cain/native/app.py'],
+    pathex=['/home/jack/GitHub/Cain'],
     binaries=[],
     datas=[],
     hiddenimports=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='SaveEditor',
+    name='Cain',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

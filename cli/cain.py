@@ -1,7 +1,9 @@
 """
-d2edit — CLI for the PD2 save editor.
+cain — CLI for the PD2 save editor (read + verify; editing lives in the app).
 
 Commands:
+  character <save.d2s>             — full character as JSON (identity, attributes,
+                                      skills, equipped gear) for an LLM/build review
   info   <save.d2s>                 — character header summary
   items  <save.d2s>                 — list items with decoded fields
   verify <save.d2s>                 — byte-exact round-trip gate
@@ -14,6 +16,7 @@ MPQ path defaults to the PD2 install next to the save if not given via --mpq.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -63,6 +66,17 @@ def _load(save, mpq):
     c = D2SChar.parse(data)
     il = c.parse_items(st)
     return data, gt, c, il
+
+
+def cmd_character(args):
+    """Emit a flat JSON character view for an LLM / build review. Read-only.
+    Reuses the same backend the desktop app uses (no Qt needed)."""
+    from gui import server as save_api
+
+    save_api.set_mpq(args.mpq)
+    summary = save_api.character_summary(args.save)
+    print(json.dumps(summary, indent=2))
+    sys.exit(1 if isinstance(summary, dict) and summary.get("error") else 0)
 
 
 def cmd_info(args):
@@ -234,10 +248,11 @@ def cmd_schema(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="d2edit")
+    ap = argparse.ArgumentParser(prog="cain")
     ap.add_argument("--mpq", default=DEFAULT_MPQ)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name, fn in [("info", cmd_info), ("items", cmd_items),
+    for name, fn in [("character", cmd_character),
+                     ("info", cmd_info), ("items", cmd_items),
                      ("verify", cmd_verify), ("verify-v2", cmd_verify_v2),
                      ("verify-stash", cmd_verify_stash), ("validate", cmd_validate)]:
         p = sub.add_parser(name)

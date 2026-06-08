@@ -1,5 +1,5 @@
 """
-Desktop app shell (PyWebView) for the save editor.
+Desktop app shell (PyWebView) for Cain (the save editor).
 
 Wraps the existing stdlib HTTP server (gui/server.py) in a NATIVE OS webview
 window — no bundled Chromium, no browser needed. Adds a native file-open dialog
@@ -104,7 +104,7 @@ def run_desktop(mpq: str | None):
     holder = {}
     api = Api(lambda: holder["win"])
     win = webview.create_window(
-        "Save Editor",
+        "Cain",
         url=f"http://{HOST}:{port}/",
         width=1100,
         height=760,
@@ -124,7 +124,7 @@ def run_browser(mpq: str | None, port: int | None = None):
         port = _free_port()
     httpd = ThreadingHTTPServer((HOST, port), srv.Handler)
     url = f"http://{HOST}:{port}/"
-    print(f"Save Editor on {url}  (mpq={srv._mpq or 'NOT FOUND — set in UI or --mpq'})")
+    print(f"Cain on {url}  (mpq={srv._mpq or 'NOT FOUND — set in UI or --mpq'})")
     try:
         import webbrowser
         webbrowser.open(url)

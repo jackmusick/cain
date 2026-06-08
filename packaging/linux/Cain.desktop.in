@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Save Editor
+Name=Cain
 GenericName=Diablo II Save Editor
 Comment=Edit and validate Project Diablo 2 character and stash saves
 Exec=@EXEC@
-Icon=save-editor
+Icon=cain
 Terminal=false
 Categories=Game;
 StartupNotify=true

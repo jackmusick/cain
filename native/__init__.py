@@ -1,2 +1,2 @@
-"""Native Qt front-end for Save Editor."""
+"""Native Qt front-end for Cain."""
 

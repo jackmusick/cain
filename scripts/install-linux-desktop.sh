@@ -2,10 +2,10 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-APP_ID="save-editor"
-EXEC_PATH="$ROOT/dist/SaveEditor"
-ICON_SRC="$ROOT/packaging/linux/save-editor.svg"
-DESKTOP_TEMPLATE="$ROOT/packaging/linux/SaveEditor.desktop.in"
+APP_ID="cain"
+EXEC_PATH="$ROOT/dist/Cain"
+ICON_SRC="$ROOT/packaging/linux/cain.svg"
+DESKTOP_TEMPLATE="$ROOT/packaging/linux/Cain.desktop.in"
 ICON_DEST="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/$APP_ID.svg"
 DESKTOP_DEST="${XDG_DATA_HOME:-$HOME/.local/share}/applications/$APP_ID.desktop"
 
@@ -42,7 +42,7 @@ elif command -v kbuildsycoca5 >/dev/null 2>&1; then
   kbuildsycoca5 >/dev/null 2>&1 || true
 fi
 
-echo "Installed Save Editor launcher:"
+echo "Installed Cain launcher:"
 echo "  $DESKTOP_DEST"
 echo "Icon:"
 echo "  $ICON_DEST"

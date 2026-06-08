@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native Qt Save Editor.
+"""Native Qt app — Cain (PD2 save editor).
 
 This is the real app shell: persistent settings, first-run setup, native file
 dialogs, Hero Editor-style character workspace, and a UI surface we can grow
@@ -66,8 +66,8 @@ from gui import server as save_api
 from core.mpq import MPQArchive
 
 
-APP_ORG = "pd2-save-editor"
-APP_NAME = "Save Editor"
+APP_ORG = "cain"
+APP_NAME = "Cain"
 CELL = 40
 EQUIP_SLOT = 48
 INV_W = 10
@@ -243,7 +243,7 @@ class DiabloAssetLoader:
 class SetupDialog(QDialog):
     def __init__(self, settings: QSettings, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Save Editor Setup")
+        self.setWindowTitle("Cain Setup")
         self.setMinimumWidth(720)
         self.settings = settings
         self.mpq = QLineEdit(settings.value("paths/mpq", ""))
@@ -2171,7 +2171,7 @@ class MainWindow(QMainWindow):
         self.selected_other_section_name: str | None = None
         self.selected_other_index: int | None = None
         self.selected_other_editable: bool = False
-        self.setWindowTitle("Save Editor")
+        self.setWindowTitle("Cain")
         self.setWindowIcon(app_icon())
         self.resize(1150, 810)
         self._build_ui()
@@ -3258,7 +3258,7 @@ def main() -> int:
         try:
             mpq, save = sys.argv[i + 1], sys.argv[i + 2]
         except IndexError:
-            print("usage: SaveEditor --selftest <pd2data.mpq> <save.d2s>", file=sys.stderr)
+            print("usage: cain --selftest <pd2data.mpq> <save.d2s>", file=sys.stderr)
             return 2
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         app = QApplication(sys.argv[:1])

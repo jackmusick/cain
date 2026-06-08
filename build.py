@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Build a single double-clickable executable of the Save Editor with PyInstaller.
+Build a single double-clickable executable of Cain with PyInstaller.
 
   python3 build.py
 
-Output: dist/SaveEditor(.exe)   — one file, double-clickable, opens the native
+Output: dist/Cain(.exe)   — one file, double-clickable, opens the native
 Qt desktop window. The MPQ and save path are chosen by the user at runtime and
 remembered in native app settings; no game files are bundled.
 
@@ -34,7 +34,7 @@ def main():
         sys.executable, "-m", "PyInstaller",
         "--clean",
         "--onefile",
-        "--name", "SaveEditor",
+        "--name", "Cain",
         "--windowed" if os.name == "nt" else "--console",
         # bundle the whole package so core/ + gui/ imports resolve
         "--paths", HERE,
@@ -42,7 +42,7 @@ def main():
     ]
     print("running:", " ".join(cmd))
     subprocess.check_call(cmd, cwd=HERE)
-    out = os.path.join(HERE, "dist", "SaveEditor" + (".exe" if os.name == "nt" else ""))
+    out = os.path.join(HERE, "dist", "Cain" + (".exe" if os.name == "nt" else ""))
     print(f"\nBuilt: {out}")
     print("Double-click it (or run from a terminal). Pick your MPQ and save on first run.")
 
