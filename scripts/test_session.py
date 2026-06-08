@@ -176,7 +176,9 @@ def test_edit_then_commit_roundtrip():
         save = save_api.parse_save(path)
         assert save.get("kind") == "character", save.get("kind")
         items = save.get("items", [])
-        dup_idx = next(i for i, it in enumerate(items) if it.get("clean"))
+        clean_indices = [i for i, it in enumerate(items) if it.get("clean")]
+        assert clean_indices, f"fixture has no clean item to duplicate (items={len(items)})"
+        dup_idx = clean_indices[0]
         before = len(items)
         res = save_api.do_duplicateitem({"path": path, "item": dup_idx})
         assert res.get("ok"), res
