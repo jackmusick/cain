@@ -1426,9 +1426,27 @@ def character_summary(path: str) -> dict:
         if s.get("level")
     ]
 
-    equipped = []
-    inventory = []
+    # Where a carried item actually sits. ONLY inventory-grid items (location 0,
+    # panel 1) are "active" — charms there count toward resists; charms in the
+    # stash/cube do nothing. Belt holds potions. (panel: 1=inv, 4=cube, 5/6=stash;
+    # location: 1=equipped, 2=belt, 0=stored.)
+    def _where(it) -> str:
+        loc, panel = it.get("location"), it.get("panel")
+        if loc == 1:
+            return "equipped"
+        if loc == 2:
+            return "belt"
+        if loc == 0 and panel == 1:
+            return "inventory"
+        if loc == 0 and panel == 4:
+            return "cube"
+        if loc == 0 and panel in (5, 6):
+            return "stash"
+        return f"loc{loc}/panel{panel}"
+
+    equipped, inventory, stash, cube = [], [], [], []
     for it in save.get("items", []):
+        where = _where(it)
         entry = {
             "name": it.get("name"),
             "base": it.get("base_name"),
@@ -1437,14 +1455,17 @@ def character_summary(path: str) -> dict:
             "sockets": it.get("num_sockets", 0),
             "stats": _item_stat_texts(it),
         }
-        if it.get("location") == 1:  # 1 == equipped on body
+        if where == "equipped":
             entry["slot"] = EQUIP_SLOTS.get(it.get("equipped_id"),
                                             f"Slot {it.get('equipped_id')}")
             equipped.append(entry)
-        else:
-            # charms, cube contents, belt, etc. — carried but not worn. Charms
-            # here contribute to effective resists; potions etc. carry no stats.
+        elif where == "inventory":
             inventory.append(entry)
+        elif where == "stash":
+            stash.append(entry)
+        elif where == "cube":
+            cube.append(entry)
+        # belt items (potions) are consumables — omitted from the build view.
     order = {name: i for i, name in enumerate(_EQUIP_SLOT_ORDER)}
     equipped.sort(key=lambda e: order.get(e["slot"], 99))
 
@@ -1469,11 +1490,14 @@ def character_summary(path: str) -> dict:
         "skills": skills,
         "equipped": equipped,
         "inventory": inventory,
+        "stash": stash,
+        "cube": cube,
         "notes": [
             "Resist lines under each item are per-item gear mods only.",
-            "Effective resist = sum of gear + charm mods (charms are NOT in "
-            "'equipped'; they sit in inventory), capped at 75 base, minus the "
-            "difficulty penalty: Normal 0, Nightmare -40, Hell -100.",
+            "Effective resist = sum of mods on 'equipped' + 'inventory' charms "
+            "ONLY (charms in 'stash'/'cube' are INACTIVE), capped at 75 base, "
+            "minus the difficulty penalty: Normal 0, Nightmare -40, Hell -100.",
+            "'stash'/'cube' items are owned but not worn — swap candidates only.",
         ],
     }
 
