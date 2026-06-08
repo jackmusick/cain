@@ -714,6 +714,12 @@ def _display_invfile(it, meta: dict) -> str:
         return meta.get("uniqueinvfile", "")
     if it.quality == 5 and meta.get("setinvfile"):
         return meta.get("setinvfile", "")
+    # Charms: Misc.txt points large/grand charms at wand/short-staff graphics
+    # (invwnd/invsst) — vestigial values. The real charm graphics are invch1/2/3
+    # (small/large/grand, height matches the code suffix), in d2exp.mpq.
+    code = (it.type_code or "").strip()
+    if code in ("cm1", "cm2", "cm3"):
+        return "invch" + code[-1]
     variant = _GRAPHIC_VARIANTS.get((it.type_code or "").strip())
     if variant and getattr(it, "has_graphic", 0):
         prefix, count = variant
