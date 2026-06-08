@@ -54,17 +54,31 @@ The save stores **mods**, not game-computed totals. You do the math:
 - Don't forget Damage Reduction (`damageresist`/"Damage Reduced by"), max-resist
   mods, and block.
 
-### 4. Cross-reference the PD2 wiki (WebFetch)
-The wiki is a MediaWiki instance with the standard API.
+### 4. Cross-reference the PD2 wiki (curl, NOT WebFetch)
+The wiki is a MediaWiki instance, but two gotchas (verified 2026-06):
+- **`WebFetch` is blocked (HTTP 403)** by the wiki's bot protection. Use `curl`
+  with a browser User-Agent via Bash instead.
+- **The API is at `/w/api.php`**, not `/api.php` (`/api.php` returns "File not
+  found"). Article pages are at `/wiki/<Page>` and render fine with a browser UA.
 
-- **Search:** `https://wiki.projectdiablo2.com/api.php?action=query&list=search&srsearch=<TERM>&format=json`
-- **Page (parsed):** `https://wiki.projectdiablo2.com/api.php?action=parse&page=<PAGE>&format=json&prop=wikitext`
-- **Human page:** `https://wiki.projectdiablo2.com/wiki/<PAGE>`
+Set a UA once and use the API:
+```sh
+UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+# Search:
+curl -sS -A "$UA" "https://wiki.projectdiablo2.com/w/api.php?action=query&list=search&srsearch=<TERM>&format=json&srlimit=5"
+# Page wikitext (best for stat/skill TABLES — parse the |a||b||c| rows):
+curl -sS -A "$UA" "https://wiki.projectdiablo2.com/w/api.php?action=parse&page=<PAGE>&format=json&prop=wikitext"
+```
+Notes: skills often **redirect** to their tree page with a section anchor (e.g.
+`Fade` → `Shadow_Disciplines#Fade`) — follow the redirect and grep the section.
+Per-level skill values live in wide wikitable rows (`! All Resistances +%` then
+`|15||17||19||...`).
 
-Use it to confirm: skill mechanics and synergies, runeword recipes/stats, unique
-and set item stats, breakpoint tables, and class build guides. **PD2 differs
+Use it to confirm: skill mechanics and per-level numbers, synergies, runeword
+recipes/stats, unique/set item stats, and breakpoint tables. **PD2 differs
 substantially from vanilla D2 / D2R — always prefer the PD2 wiki over recalled
-vanilla knowledge.**
+vanilla knowledge** (e.g. Fade requires character level 18 and is +15% all-res /
+0% phys-DR at level 1, +2% res & +1% phys-DR per level — not the vanilla values).
 
 ### 5. Give the advice
 Be concrete and prioritized:
