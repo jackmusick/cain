@@ -15,22 +15,28 @@ without code changes. Only the container formats are hardcoded.
 - For a packaged executable: `pip install PySide6 pyinstaller`
 - The game's `pd2data.mpq` (from your PD2 install) reachable on disk
 
-## Install it (Linux — recommended)
+## Install
+
+### Linux (one-liner, latest main)
 ```sh
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/jackmusick/cain/main/install.sh | sh
 ```
-User-local, no sudo: creates a private venv under `~/.local/share/cain`, installs
-`cain` (the desktop app) and `cain-cli` (the read/verify CLI) into `~/.local/bin`,
-and adds a **Cain** app-menu launcher with a Diablo-like icon. Re-run after a
-`git pull` to update. Then launch from your app menu or run `cain`. On first run,
-choose `pd2data.mpq` and a character/stash save; the app remembers both.
+User-local, no sudo: a private venv under `~/.local/share/cain`, the `cain`
+(desktop app) and `cain-cli` (read/verify CLI) commands in `~/.local/bin`, and a
+**Cain** app-menu launcher with a Diablo-like icon. Re-run the same command to
+update. On first run, choose `pd2data.mpq` and a character/stash save; the app
+remembers both.
 
 To uninstall: `rm -rf ~/.local/share/cain ~/.local/bin/cain ~/.local/bin/cain-cli ~/.local/share/applications/cain.desktop`.
 
-### Run from source (no install)
+### From source (developers)
 ```sh
-pip install PySide6
-python3 native/app.py
+git clone https://github.com/jackmusick/cain
+cd cain
+./install.sh                 # same venv install, from your checkout
+# or, for an editable dev install:
+python3 -m venv .venv && .venv/bin/pip install -e .
+.venv/bin/cain               # desktop app   (.venv/bin/cain-cli for the CLI)
 ```
 
 ### Single double-clickable executable (PyInstaller, optional)
