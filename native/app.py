@@ -2371,7 +2371,42 @@ class MainWindow(QMainWindow):
             if new_mpq != old_mpq or new_save != old_save:
                 self.load_current()
 
+    def _confirm_lose_changes(self) -> bool:
+        """Return True if it's safe to proceed (no dirt, or user saved/discarded).
+        False means cancel the pending action."""
+        if not save_api.dirty_paths():
+            return True
+        choice = QMessageBox.question(
+            self, "Unsaved changes",
+            "You have unsaved changes. Save them before continuing?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save)
+        if choice == QMessageBox.Cancel:
+            return False
+        if choice == QMessageBox.Discard:
+            for p in list(save_api.dirty_paths()):
+                save_api.discard(p)
+            self._update_title()
+            return True
+        # Save: commit synchronously here (we're about to close/switch anyway)
+        res = save_api.commit_all()
+        if not res.get("ok"):
+            QMessageBox.warning(self, "Save failed",
+                                "The edit did not validate and was not written. "
+                                "Resolve the issue or discard to continue.")
+            return False
+        self._update_title()
+        return True
+
+    def closeEvent(self, event):
+        if self._confirm_lose_changes():
+            event.accept()
+        else:
+            event.ignore()
+
     def pick_mpq(self):
+        if not self._confirm_lose_changes():
+            return
         current = self.settings.value("paths/mpq", "")
         start = os.path.dirname(current) if current and os.path.isdir(os.path.dirname(current)) else os.path.expanduser("~")
         path, _ = QFileDialog.getOpenFileName(
@@ -2382,6 +2417,8 @@ class MainWindow(QMainWindow):
             self.load_current()
 
     def pick_save(self):
+        if not self._confirm_lose_changes():
+            return
         start = self.settings.value("paths/save", "") or os.path.expanduser("~")
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Diablo II save", start,
