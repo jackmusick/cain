@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QFont,
     QIcon,
     QImage,
+    QKeySequence,
     QPainter,
     QPen,
     QPixmap,
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressDialog,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -2173,6 +2175,16 @@ class _WarmWorker(QThread):
             self.done.emit(False, f"{type(e).__name__}: {e}")
 
 
+class _SaveWorker(QThread):
+    done = Signal(dict)
+
+    def run(self):
+        try:
+            self.done.emit(save_api.commit_all())
+        except Exception as e:  # noqa: BLE001
+            self.done.emit({"ok": False, "results": [{"error": str(e)}]})
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2200,6 +2212,11 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(20, 20))
         self.addToolBar(toolbar)
+        self.save_action = QAction("Save", self)
+        self.save_action.setShortcut(QKeySequence.StandardKey.Save)  # Ctrl+S
+        self.save_action.triggered.connect(self.save_now)
+        self.save_action.setEnabled(False)
+        toolbar.addAction(self.save_action)
         for text, fn in [
             ("Open Save", self.pick_save),
             ("Open MPQ", self.pick_mpq),
@@ -2412,6 +2429,45 @@ class MainWindow(QMainWindow):
         self.loaded = LoadedSave(path=path, data=data)
         self.render_save()
 
+    def _update_title(self):
+        dirty = bool(save_api.dirty_paths())
+        if self.loaded:
+            name = os.path.basename(self.loaded.path)
+            self.setWindowTitle(f"{'*' if dirty else ''}{name} — Cain")
+        else:
+            self.setWindowTitle("Cain")
+        self.save_action.setEnabled(dirty)
+
+    def save_now(self):
+        if not save_api.dirty_paths():
+            return
+        self._save_progress = QProgressDialog("Saving…", "", 0, 0, self)
+        self._save_progress.setWindowTitle("Cain")
+        self._save_progress.setCancelButton(None)
+        self._save_progress.setWindowModality(Qt.WindowModal)
+        self._save_progress.setMinimumDuration(0)
+        self.setEnabled(False)            # block edits during the write
+        self._save_progress.show()
+        self._saver = _SaveWorker(self)
+        self._saver.done.connect(self._on_save_done)
+        self._saver.start()
+
+    def _on_save_done(self, res: dict):
+        self.setEnabled(True)
+        self._save_progress.close()
+        if not res.get("ok"):
+            errs = []
+            for r in res.get("results", []):
+                if r.get("error"):
+                    errs.append(r["error"])
+                    errs.extend(r.get("details", []) or [])
+            QMessageBox.warning(self, "Save failed",
+                                "The edit did not validate and was not written:\n\n"
+                                + "\n".join(errs[:20]))
+        else:
+            self.statusBar().showMessage("Saved", 5000)
+        self._update_title()
+
     def render_save(self):
         if not self.loaded:
             return
@@ -2457,6 +2513,7 @@ class MainWindow(QMainWindow):
         self.selected_other_index = None
         self.selected_other_editable = False
         self.detail.show_item(None)
+        self._update_title()
 
     def set_other_sections(self, sections: list[dict]):
         self.other_sections = [sec for sec in sections if sec.get("id") != "player" and sec.get("items")]
@@ -2636,7 +2693,7 @@ class MainWindow(QMainWindow):
             return
         if source == self.loaded.path:
             self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Moved stash item and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Moved stash item — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         if source_combo_idx < self.stash_source.count():
             self.stash_source.setCurrentIndex(source_combo_idx)
@@ -2679,7 +2736,7 @@ class MainWindow(QMainWindow):
             self.load_current()
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Moved {item.get('name', 'item')} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Moved {item.get('name', 'item')} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         self.select_item(index)
 
@@ -2701,7 +2758,7 @@ class MainWindow(QMainWindow):
             return
         idx = self.selected_index
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Moved {item.get('name', 'item')} to inventory and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Moved {item.get('name', 'item')} to inventory — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         self.select_item(idx)
 
@@ -2765,7 +2822,7 @@ class MainWindow(QMainWindow):
             return
         idx = self.selected_index
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Equipped {item.get('name', 'item')} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Equipped {item.get('name', 'item')} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         self.select_item(idx)
 
@@ -2786,7 +2843,7 @@ class MainWindow(QMainWindow):
             return
         self.settings.setValue("paths/save", res["out"])
         self.statusBar().showMessage(
-            f"Equipped {item.get('name', 'item')} to {EQUIP_SLOT_NAMES.get(slot, slot)} and wrote {res['out']}",
+            f"Equipped {item.get('name', 'item')} to {EQUIP_SLOT_NAMES.get(slot, slot)} — unsaved (Ctrl+S to save)",
             7000)
         self.load_current()
         self.select_item(index)
@@ -2807,7 +2864,7 @@ class MainWindow(QMainWindow):
             return
         idx = self.selected_index
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Max rolled {name} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Max rolled {name} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         self.select_item(idx)
 
@@ -2837,7 +2894,7 @@ class MainWindow(QMainWindow):
         idx = self.selected_index
         name = item.get("name", "item")
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated {name} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Updated {name} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         self.select_item(idx)
 
@@ -2876,7 +2933,7 @@ class MainWindow(QMainWindow):
         name = item.get("name", "item")
         self.settings.setValue("paths/save", res["out"])
         self.statusBar().showMessage(
-            f"Updated {name} in {self.selected_other_section_name or 'section'} and wrote {res['out']}",
+            f"Updated {name} in {self.selected_other_section_name or 'section'} — unsaved (Ctrl+S to save)",
             7000)
         self.load_current()
         for row in range(self.other_list.count()):
@@ -2913,7 +2970,7 @@ class MainWindow(QMainWindow):
         idx = self.selected_index
         self.settings.setValue("paths/save", res["out"])
         self.statusBar().showMessage(
-            f"Removed {res.get('removed_count', 0)} socketed items and wrote {res['out']}",
+            f"Removed {res.get('removed_count', 0)} socketed items — unsaved (Ctrl+S to save)",
             7000)
         self.load_current()
         self.select_item(idx)
@@ -2945,7 +3002,7 @@ class MainWindow(QMainWindow):
         idx = self.selected_index
         filler = res.get("socketed", {}).get("name", code)
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Socketed {filler} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Socketed {filler} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         self.select_item(idx)
 
@@ -2965,7 +3022,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Duplicate rejected", res.get("error", "The item could not be duplicated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Duplicated {item.get('name', 'item')} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Duplicated {item.get('name', 'item')} — unsaved (Ctrl+S to save)", 7000)
         new_index = int(res.get("index", self.selected_index))
         self.load_current()
         self.select_item(new_index)
@@ -3012,7 +3069,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Copy rejected", res.get("error", "The item could not be copied to stash.") + ("\n" + details if details else ""))
             return
         self.statusBar().showMessage(
-            f"Copied {item.get('name', 'item')} to stash page {page_idx + 1} and wrote {res['out']}",
+            f"Copied {item.get('name', 'item')} to stash page {page_idx + 1} — unsaved (Ctrl+S to save)",
             9000)
 
     def copy_selected_to_character(self):
@@ -3049,7 +3106,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Copy rejected", res.get("error", "The item could not be copied to character.") + ("\n" + details if details else ""))
             return
         self.statusBar().showMessage(
-            f"Copied {item.get('name', 'item')} to character inventory and wrote {res['out']}",
+            f"Copied {item.get('name', 'item')} to character inventory — unsaved (Ctrl+S to save)",
             9000)
 
     def copy_selected_section_to_character(self):
@@ -3080,7 +3137,7 @@ class MainWindow(QMainWindow):
         new_index = int(res.get("index", -1))
         self.settings.setValue("paths/save", res["out"])
         self.statusBar().showMessage(
-            f"Copied {item.get('name', 'item')} from {self.selected_other_section_name or 'section'} to inventory and wrote {res['out']}",
+            f"Copied {item.get('name', 'item')} from {self.selected_other_section_name or 'section'} to inventory — unsaved (Ctrl+S to save)",
             9000)
         self.load_current()
         if new_index >= 0:
@@ -3107,7 +3164,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Delete rejected", res.get("error", "The item could not be deleted.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Deleted {item.get('name', 'item')} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Deleted {item.get('name', 'item')} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def save_character_stats(self, updates: dict):
@@ -3123,7 +3180,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Character stat edit rejected", res.get("error", "The character stats could not be updated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated character stats and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Updated character stats — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def save_skills(self, updates: dict):
@@ -3139,7 +3196,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Skill edit rejected", res.get("error", "The skills could not be updated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated skills and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Updated skills — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def save_waypoints(self, updates: dict):
@@ -3155,7 +3212,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Waypoint edit rejected", res.get("error", "The waypoints could not be updated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated waypoints and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Updated waypoints — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def save_quests(self, updates: dict):
@@ -3171,7 +3228,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Quest edit rejected", res.get("error", "The quest flags could not be updated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated quest flags and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Updated quest flags — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def validate_save(self):
@@ -3208,7 +3265,7 @@ class MainWindow(QMainWindow):
             return False
         self.settings.setValue("paths/save", res["out"])
         added = res.get("added", {}).get("name", "item")
-        self.statusBar().showMessage(f"Created {added} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Created {added} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         return True
 
