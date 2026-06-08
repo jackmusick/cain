@@ -1889,7 +1889,10 @@ class ItemBuilderDialog(QDialog):
     def _add_stat_row(self):
         combo = SearchableComboBox()
         combo.addItem("No stat", None)
-        for row in self.stats_data:
+        # sort by the *displayed* (game string-table) name, which can differ from
+        # the internal stat name browse() sorts by (e.g. "maxhp" -> "Life").
+        for row in sorted(self.stats_data,
+                          key=lambda r: self._display_stat_name(r.get("name", "")).lower()):
             combo.addItem(self._stat_label(row), row)
         value = QSpinBox()
         value.setRange(-999999, 999999)

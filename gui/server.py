@@ -1540,6 +1540,7 @@ def browse(kind):
                 "value_count": len(components),
             }
             out.append(row)
+        out.sort(key=lambda r: (r.get("name") or "").lower())
         return {"stats": out}
     if kind == "uniques":
         out = []
@@ -1554,6 +1555,7 @@ def browse(kind):
                 "level_req": _int(r.get("lvl req", "")),
                 "enabled": _int(r.get("enabled", ""), 1),
             })
+        out.sort(key=lambda r: (r.get("name") or "").lower())
         return {"uniques": out}
     if kind == "sets":
         out = []
@@ -1567,6 +1569,7 @@ def browse(kind):
                 "code": code, "level": _int(r.get("lvl", "")),
                 "level_req": _int(r.get("lvl req", "")),
             })
+        out.sort(key=lambda r: (r.get("name") or "").lower())
         return {"sets": out}
     if kind in ("magic_prefixes", "magic_suffixes"):
         table = "MagicPrefix" if kind == "magic_prefixes" else "MagicSuffix"
@@ -1593,6 +1596,7 @@ def browse(kind):
                 "rare": _int(r.get("rare", ""), 0),
                 "mods": mods,
             })
+        out.sort(key=lambda r: (r.get("name") or "").lower())
         return {key: out}
     if kind in ("rare_prefixes", "rare_suffixes"):
         table = "RarePrefix" if kind == "rare_prefixes" else "RareSuffix"
@@ -1604,6 +1608,7 @@ def browse(kind):
                 continue
             save_id = i + 156 if kind == "rare_prefixes" else i
             out.append({"id": save_id, "row": i, "name": name})
+        out.sort(key=lambda r: (r.get("name") or "").lower())
         return {key: out}
     if kind == "socket_fillers":
         out = []
@@ -1620,6 +1625,7 @@ def browse(kind):
                     "type": typ,
                     "invfile": (r.get("invfile", "") or "").strip(),
                 })
+        out.sort(key=lambda r: (r.get("name") or "").lower())
         return {"socket_fillers": out}
     if kind == "runewords":
         filler_names = {row["code"]: row["name"] for row in browse("socket_fillers").get("socket_fillers", [])}
@@ -1651,6 +1657,7 @@ def browse(kind):
                 ],
                 "stats": [_stat_to_dict(s, gt) for s in stats],
             })
+        out.sort(key=lambda r: (r.get("name") or "").lower())
         return {"runewords": out}
     # bases: item codes by category from Armor/Weapons/Misc
     out = []
@@ -1667,6 +1674,7 @@ def browse(kind):
                     "type_codes": sorted(_base_type_codes(code)),
                     "max_sockets": meta.get("max_sockets", 0),
                 })
+    out.sort(key=lambda r: (r.get("name") or "").lower())
     return {"bases": out}
 
 
