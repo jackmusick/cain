@@ -2163,14 +2163,14 @@ class SettingsDialog(QDialog):
 
 
 class _WarmWorker(QThread):
-    done = Signal(bool)
+    done = Signal(bool, str)
 
     def run(self):
         try:
             save_api.warm()
-            self.done.emit(True)
-        except Exception:  # noqa: BLE001
-            self.done.emit(False)
+            self.done.emit(True, "")
+        except Exception as e:  # noqa: BLE001
+            self.done.emit(False, f"{type(e).__name__}: {e}")
 
 
 class MainWindow(QMainWindow):
@@ -2185,6 +2185,7 @@ class MainWindow(QMainWindow):
         self.selected_other_section_name: str | None = None
         self.selected_other_index: int | None = None
         self.selected_other_editable: bool = False
+        self._warm_gen = 0
         self.setWindowTitle("Cain")
         self.setWindowIcon(app_icon())
         self.resize(1150, 810)
@@ -2384,15 +2385,19 @@ class MainWindow(QMainWindow):
         if save_api.is_warm():
             self._load_save_now()
             return
+        self._warm_gen = getattr(self, "_warm_gen", 0) + 1
+        gen = self._warm_gen
         self.statusBar().showMessage("Loading game data…")
         self._warm = _WarmWorker(self)
-        self._warm.done.connect(self._on_warm_done)
+        self._warm.done.connect(lambda ok, msg, g=gen: self._on_warm_done(ok, msg, g))
         self._warm.start()
 
-    def _on_warm_done(self, ok: bool):
+    def _on_warm_done(self, ok: bool, msg: str, gen: int):
+        if gen != getattr(self, "_warm_gen", 0):
+            return  # superseded by a newer load_current
         if not ok:
             QMessageBox.critical(self, "Could not load game data",
-                                 "Failed to read tables from the MPQ.")
+                                 "Failed to read tables from the MPQ." + (f"\n\n{msg}" if msg else ""))
             return
         self.statusBar().clearMessage()
         self._load_save_now()

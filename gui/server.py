@@ -322,6 +322,8 @@ SKILL_NAME_SWAPS = {
 _gt = None
 _mpq = DEFAULT_MPQ
 _item_meta = None
+# Written by the warm worker thread, read on the main thread. Single writer,
+# monotonic False->True (reset only via set_mpq), so it's GIL-safe without a lock.
 _warm_done = False
 
 # --- in-memory edit session -------------------------------------------------
