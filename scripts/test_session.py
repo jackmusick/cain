@@ -216,6 +216,86 @@ def test_edit_then_commit_roundtrip():
         save_api.reset_session()
 
 
+def test_commit_all_aborts_when_one_of_many_invalid():
+    """Fix 2: two-phase commit_all is all-or-nothing across files. With one of
+    two dirty buffers invalid, NEITHER is written and NO backups are created."""
+    if not _have_mpq():
+        print("SKIP multi-file abort test (no PD2_MPQ)")
+        return
+    save_api.reset_session()
+    path_a = _tmp_copy()
+    path_b = _tmp_copy()
+    try:
+        disk_a = open(path_a, "rb").read()
+        disk_b = open(path_b, "rb").read()
+        # A: a real, valid edit via do_duplicateitem -> dirty + valid.
+        save = save_api.parse_save(path_a)
+        clean = [i for i, it in enumerate(save.get("items", [])) if it.get("clean")]
+        assert clean, "fixture has no clean item to duplicate"
+        assert save_api.do_duplicateitem({"path": path_a, "item": clean[0]}).get("ok")
+        assert save_api.validate_buffer(path_a)["ok"], "A must be valid"
+        # B: dirty but corrupted so validation fails (checksum mismatch).
+        corrupted = bytearray(disk_b)
+        corrupted[0x10] = 0x21
+        save_api._store_bytes(path_b, corrupted)
+        assert not save_api.validate_buffer(path_b)["ok"], "B must be invalid"
+        assert path_in_dirty(path_a) and path_in_dirty(path_b)
+
+        res = save_api.commit_all()
+        assert not res.get("ok"), f"commit_all must fail, got {res}"
+        assert res.get("aborted") is True, f"must report aborted, got {res}"
+        # All-or-nothing: neither file written, neither backup dir created.
+        assert open(path_a, "rb").read() == disk_a, "A must NOT be written"
+        assert open(path_b, "rb").read() == disk_b, "B must NOT be written"
+        assert not os.path.isdir(os.path.join(os.path.dirname(path_a), "backups"))
+        assert not os.path.isdir(os.path.join(os.path.dirname(path_b), "backups"))
+        assert path_in_dirty(path_a) and path_in_dirty(path_b), "both stay dirty"
+        print("PASS commit_all aborts atomically when one of many buffers is invalid")
+    finally:
+        for p in (path_a, path_b):
+            shutil.rmtree(os.path.join(os.path.dirname(p), "backups"), ignore_errors=True)
+            os.remove(p)
+        save_api.reset_session()
+
+
+def test_commit_all_writes_all_when_all_valid():
+    """Fix 2: when every dirty buffer is valid, commit_all writes BOTH, each with
+    exactly one backup, and disk matches the committed buffer."""
+    if not _have_mpq():
+        print("SKIP multi-file commit test (no PD2_MPQ)")
+        return
+    save_api.reset_session()
+    path_a = _tmp_copy()
+    path_b = _tmp_copy()
+    try:
+        for p in (path_a, path_b):
+            save = save_api.parse_save(p)
+            clean = [i for i, it in enumerate(save.get("items", [])) if it.get("clean")]
+            assert clean, "fixture has no clean item to duplicate"
+            assert save_api.do_duplicateitem({"path": p, "item": clean[0]}).get("ok")
+            assert save_api.validate_buffer(p)["ok"]
+        assert path_in_dirty(path_a) and path_in_dirty(path_b)
+
+        res = save_api.commit_all()
+        assert res.get("ok"), res
+        assert not save_api.dirty_paths(), "commit must clear all dirty"
+        for p in (path_a, path_b):
+            # Both temp copies live in /tmp and share one backups/ dir; count
+            # only the backups belonging to this file's basename.
+            backups = os.path.join(os.path.dirname(p), "backups")
+            baks = ([b for b in os.listdir(backups) if b.startswith(os.path.basename(p))]
+                    if os.path.isdir(backups) else [])
+            assert len(baks) == 1, f"each file gets one backup, got {baks} for {p}"
+            assert bytes(save_api._read_bytes(p)) == open(p, "rb").read(), \
+                "disk must equal committed buffer"
+        print("PASS commit_all writes all buffers when every one is valid")
+    finally:
+        for p in (path_a, path_b):
+            shutil.rmtree(os.path.join(os.path.dirname(p), "backups"), ignore_errors=True)
+            os.remove(p)
+        save_api.reset_session()
+
+
 def main():
     test_read_bytes_loads_disk_then_buffer()
     test_discard_reloads_disk()
@@ -225,6 +305,8 @@ def main():
     test_commit_rejects_invalid_buffer()
     test_warm_marks_ready()
     test_edit_then_commit_roundtrip()
+    test_commit_all_aborts_when_one_of_many_invalid()
+    test_commit_all_writes_all_when_all_valid()
     print("ALL SESSION TESTS PASSED")
 
 

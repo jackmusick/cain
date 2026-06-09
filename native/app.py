@@ -2454,10 +2454,16 @@ class MainWindow(QMainWindow):
         return True
 
     def closeEvent(self, event):
-        if self._confirm_lose_changes():
-            event.accept()
-        else:
+        if not self._confirm_lose_changes():
             event.ignore()
+            return
+        if hasattr(self, "_poll"):
+            self._poll.stop()
+        for attr in ("_warm", "_saver", "_validator"):
+            w = getattr(self, attr, None)
+            if w is not None and w.isRunning():
+                w.wait()
+        event.accept()
 
     def pick_mpq(self):
         if not self._confirm_lose_changes():
@@ -2575,6 +2581,7 @@ class MainWindow(QMainWindow):
     def save_now(self):
         if not save_api.dirty_paths():
             return
+        self._poll.stop()                 # don't validate _SESSION while saving mutates it
         self._save_progress = QProgressDialog("Saving…", "", 0, 0, self)
         self._save_progress.setWindowTitle("Cain")
         self._save_progress.setCancelButton(None)
@@ -2591,6 +2598,7 @@ class MainWindow(QMainWindow):
         self._save_progress.close()
         if self._report_save_result(res):
             self.statusBar().showMessage("Saved", 5000)
+        self._poll.start()
 
     def render_save(self):
         if not self.loaded:

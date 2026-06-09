@@ -1871,19 +1871,13 @@ def validate_buffer(path: str):
     return {"ok": res.ok, "errors": list(res.errors)}
 
 
-def commit_save(path: str):
-    """Validate the buffer, back up the original, write to disk, clear dirty."""
+def _write_committed(path: str):
+    """Back up the original, write the buffer snapshot to disk, clear dirty.
+    Does NOT validate — caller is responsible for having validated first."""
     key = _session_key(path)
-    entry = _SESSION.get(key)
-    if entry is None or not entry["dirty"]:
-        return {"ok": True, "out": path, "nothing_to_do": True}
+    entry = _SESSION[key]
     payload = bytes(entry["data"])   # snapshot; assumes single writer (Qt UI is
-                                     # disabled during save) — validate & write the
-                                     # same bytes
-    v = validate_buffer(path)
-    if not v["ok"]:
-        return {"ok": False, "error": "edit rejected by validator (would not load)",
-                "details": v["errors"], "path": path}
+                                     # disabled during save)
     backup = _backup_original(path)
     with open(path, "wb") as f:
         f.write(payload)
@@ -1891,15 +1885,42 @@ def commit_save(path: str):
     return {"ok": True, "out": path, "backup": backup, "validated": True}
 
 
+def commit_save(path: str):
+    """Validate the buffer, back up the original, write to disk, clear dirty."""
+    key = _session_key(path)
+    entry = _SESSION.get(key)
+    if entry is None or not entry["dirty"]:
+        return {"ok": True, "out": path, "nothing_to_do": True}
+    v = validate_buffer(path)
+    if not v["ok"]:
+        return {"ok": False, "error": "edit rejected by validator (would not load)",
+                "details": v["errors"], "path": path}
+    return _write_committed(path)
+
+
 def commit_all():
-    """Save every dirty buffer. Aggregates results; the single Save action."""
-    results = []
-    ok = True
-    for path in list(dirty_paths()):
-        r = commit_save(path)
-        results.append(r)
-        ok = ok and bool(r.get("ok"))
-    return {"ok": ok, "results": results}
+    """Save every dirty buffer atomically across files: validate ALL dirty
+    buffers first, then write them only if every one passes. If any buffer
+    fails validation, nothing is written (no half-persisted cross-file moves).
+
+    Note: full disk-write atomicity (temp+rename) is out of scope; the guarantee
+    is validate-all-then-write-all."""
+    paths = list(dirty_paths())
+
+    # Phase 1: validate every dirty buffer; collect failures without writing.
+    failures = []
+    for path in paths:
+        v = validate_buffer(path)
+        if not v["ok"]:
+            failures.append({"ok": False,
+                             "error": "edit rejected by validator (would not load)",
+                             "details": v["errors"], "path": path})
+    if failures:
+        return {"ok": False, "results": failures, "aborted": True}
+
+    # Phase 2: all valid — back up + write every buffer (no re-validation).
+    results = [_write_committed(path) for path in paths]
+    return {"ok": True, "results": results}
 
 
 def _stat_edit_bounds(stat):
@@ -3392,9 +3413,16 @@ def _rebuild_item_list_region(data, st, items, off: int, end: int):
 
 
 def do_validate(body):
+    """Validate the in-memory buffer (not the on-disk file) so the result agrees
+    with the live validation banner. Picks the validator by buffer kind, exactly
+    like validate_buffer()."""
+    path = body["path"]
     st = tables().stat_table()
-    res = validate_mod.validate_file(body["path"], st)
-    return {"valid": res.ok, "errors": res.errors, "warnings": res.warnings,
+    data = bytes(_read_bytes(path))   # ensures the entry exists
+    kind = _SESSION[_session_key(path)]["kind"]
+    res = (validate_mod.validate_stash(data, st) if kind == "stash"
+           else validate_mod.validate_d2s(data, st))
+    return {"valid": res.ok, "errors": list(res.errors), "warnings": list(res.warnings),
             "items": res.item_count, "sections": res.sections}
 
 
@@ -3466,9 +3494,25 @@ class Handler(BaseHTTPRequestHandler):
                   "/api/additem": do_additem, "/api/validate": do_validate,
                   "/api/mpq": lambda b: set_mpq(b.get("path", ""))}
         fn = routes.get(u.path)
+        # The native app stages edits in memory and writes on an explicit Save.
+        # The legacy web UI has no Save button, so it persists each successful
+        # mutating edit immediately (validate-on-write, like the old behavior).
+        non_persist = {"/api/validate", "/api/mpq"}
         try:
-            self._json(fn(body) if fn else {"error": "not found"},
-                       200 if fn else 404)
+            if not fn:
+                self._json({"error": "not found"}, 404)
+                return
+            result = fn(body)
+            if u.path not in non_persist and result.get("ok"):
+                commit = commit_all()
+                if not commit.get("ok"):
+                    details = [d for r in commit.get("results", [])
+                               for d in r.get("details", []) or []]
+                    result = {"error": "edit rejected by validator (would not load)",
+                              "details": details}
+                else:
+                    result["committed"] = True
+            self._json(result, 200)
         except Exception as e:  # noqa: BLE001
             import traceback
             self._json({"error": repr(e), "trace": traceback.format_exc()}, 500)
