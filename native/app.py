@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from PySide6.QtCore import QMimeData, QPoint, QRect, QSettings, QSize, Qt, Signal
+from PySide6.QtCore import QMimeData, QPoint, QRect, QSettings, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QBrush,
@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QFont,
     QIcon,
     QImage,
+    QKeySequence,
     QPainter,
     QPen,
     QPixmap,
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressDialog,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -2162,6 +2164,43 @@ class SettingsDialog(QDialog):
         super().accept()
 
 
+class _WarmWorker(QThread):
+    done = Signal(bool, str)
+
+    def run(self):
+        try:
+            save_api.warm()
+            self.done.emit(True, "")
+        except Exception as e:  # noqa: BLE001
+            self.done.emit(False, f"{type(e).__name__}: {e}")
+
+
+class _SaveWorker(QThread):
+    done = Signal(dict)
+
+    def run(self):
+        try:
+            self.done.emit(save_api.commit_all())
+        except Exception as e:  # noqa: BLE001
+            self.done.emit({"ok": False, "results": [{"error": str(e)}]})
+
+
+class _ValidateWorker(QThread):
+    done = Signal(str, int, dict)   # (path, revision-validated, result)
+
+    def __init__(self, path: str, rev: int, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._rev = rev
+
+    def run(self):
+        try:
+            res = save_api.validate_buffer(self._path)
+        except Exception as e:  # noqa: BLE001
+            res = {"ok": False, "errors": [str(e)]}
+        self.done.emit(self._path, self._rev, res)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2174,10 +2213,19 @@ class MainWindow(QMainWindow):
         self.selected_other_section_name: str | None = None
         self.selected_other_index: int | None = None
         self.selected_other_editable: bool = False
+        self._warm_gen = 0
         self.setWindowTitle("Cain")
         self.setWindowIcon(app_icon())
         self.resize(1150, 810)
         self._build_ui()
+        self._last_rev = 0
+        self._validated_rev = 0
+        self._validating = False
+        self._validation_errors: list[str] = []
+        self._poll = QTimer(self)
+        self._poll.setInterval(250)
+        self._poll.timeout.connect(self._poll_tick)
+        self._poll.start()
         self._build_menu()
         if not self._ensure_setup():
             raise SystemExit(0)
@@ -2188,6 +2236,11 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(20, 20))
         self.addToolBar(toolbar)
+        self.save_action = QAction("Save", self)
+        self.save_action.setShortcut(QKeySequence.StandardKey.Save)  # Ctrl+S
+        self.save_action.triggered.connect(self.save_now)
+        self.save_action.setEnabled(False)
+        toolbar.addAction(self.save_action)
         for text, fn in [
             ("Open Save", self.pick_save),
             ("Open MPQ", self.pick_mpq),
@@ -2322,7 +2375,22 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(scrolled(stash_tab), "Stash")
         self.tabs.addTab(other_tab, "Mercenary")
         self.tabs.addTab(all_tab, "All Items")
-        self.setCentralWidget(self.tabs)
+
+        self.validation_banner = QLabel("")
+        self.validation_banner.setObjectName("validationBanner")
+        self.validation_banner.setStyleSheet(
+            "#validationBanner { background:#5a1e1e; color:#ffd9d9; padding:6px 10px; }")
+        self.validation_banner.setVisible(False)
+        self.validation_banner.setCursor(Qt.PointingHandCursor)
+        self.validation_banner.mousePressEvent = lambda _e: self._show_validation_details()
+
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self.validation_banner)
+        central_layout.addWidget(self.tabs, 1)
+        self.setCentralWidget(central)
 
     def _ensure_setup(self) -> bool:
         mpq = self.settings.value("paths/mpq", "")
@@ -2340,9 +2408,66 @@ class MainWindow(QMainWindow):
             new_mpq = self.settings.value("paths/mpq", "")
             new_save = self.settings.value("paths/save", "")
             if new_mpq != old_mpq or new_save != old_save:
+                if not self._confirm_lose_changes():
+                    # user kept unsaved edits (or save failed) — revert the path
+                    # change so QSettings stays consistent with the loaded file
+                    self.settings.setValue("paths/mpq", old_mpq)
+                    self.settings.setValue("paths/save", old_save)
+                    return
                 self.load_current()
 
+    def _confirm_lose_changes(self) -> bool:
+        """Return True if it's safe to proceed (no dirt, or user saved/discarded).
+        False means cancel the pending action."""
+        if not save_api.dirty_paths():
+            return True
+        choice = QMessageBox.question(
+            self, "Unsaved changes",
+            "You have unsaved changes. Save them before continuing?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save)
+        if choice == QMessageBox.Cancel:
+            return False
+        if choice == QMessageBox.Discard:
+            for p in list(save_api.dirty_paths()):
+                save_api.discard(p)
+            self._update_title()
+            return True
+        # Save: commit synchronously (modal dialog above keeps the UI blocked);
+        # we need the result before closing/switching.
+        return self._report_save_result(save_api.commit_all())
+
+    def _report_save_result(self, res: dict) -> bool:
+        """Show validator errors on failure; refresh title on success.
+        Returns whether the save succeeded."""
+        if not res.get("ok"):
+            errs = []
+            for r in res.get("results", []):
+                if r.get("error"):
+                    errs.append(r["error"])
+                    errs.extend(r.get("details", []) or [])
+            QMessageBox.warning(self, "Save failed",
+                                "The edit did not validate and was not written:\n\n"
+                                + "\n".join(errs[:20]))
+            return False
+        self._update_title()
+        return True
+
+    def closeEvent(self, event):
+        if not self._confirm_lose_changes():
+            event.ignore()
+            return
+        if hasattr(self, "_poll"):
+            self._poll.stop()
+        for attr in ("_warm", "_saver", "_validator"):
+            w = getattr(self, attr, None)
+            if w is not None and w.isRunning():
+                w.wait()
+        event.accept()
+
     def pick_mpq(self):
+        if not self._confirm_lose_changes():
+            return
         current = self.settings.value("paths/mpq", "")
         start = os.path.dirname(current) if current and os.path.isdir(os.path.dirname(current)) else os.path.expanduser("~")
         path, _ = QFileDialog.getOpenFileName(
@@ -2353,6 +2478,8 @@ class MainWindow(QMainWindow):
             self.load_current()
 
     def pick_save(self):
+        if not self._confirm_lose_changes():
+            return
         start = self.settings.value("paths/save", "") or os.path.expanduser("~")
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Diablo II save", start,
@@ -2364,16 +2491,117 @@ class MainWindow(QMainWindow):
     def load_current(self):
         global ASSETS
         mpq = self.settings.value("paths/mpq", "")
-        path = self.settings.value("paths/save", "")
         try:
             save_api.set_mpq(mpq)
-            ASSETS = DiabloAssetLoader(mpq)
+            # Rebuild the asset loader only when the MPQ actually changed —
+            # reopening every archive on each edit refresh is expensive.
+            if ASSETS is None or getattr(ASSETS, "mpq_path", None) != mpq:
+                ASSETS = DiabloAssetLoader(mpq)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Could not load MPQ", str(e))
+            return
+        if save_api.is_warm():
+            self._load_save_now()
+            return
+        self._warm_gen = getattr(self, "_warm_gen", 0) + 1
+        gen = self._warm_gen
+        self.statusBar().showMessage("Loading game data…")
+        self._warm = _WarmWorker(self)
+        self._warm.done.connect(lambda ok, msg, g=gen: self._on_warm_done(ok, msg, g))
+        self._warm.start()
+
+    def _on_warm_done(self, ok: bool, msg: str, gen: int):
+        if gen != getattr(self, "_warm_gen", 0):
+            return  # superseded by a newer load_current
+        if not ok:
+            QMessageBox.critical(self, "Could not load game data",
+                                 "Failed to read tables from the MPQ." + (f"\n\n{msg}" if msg else ""))
+            return
+        self.statusBar().clearMessage()
+        self._load_save_now()
+
+    def _load_save_now(self):
+        path = self.settings.value("paths/save", "")
+        try:
             data = save_api.parse_save(path)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Could not load save", str(e))
             return
         self.loaded = LoadedSave(path=path, data=data)
+        self._last_rev = 0
+        self._validated_rev = 0
+        self._validating = False
+        self._validation_errors = []
+        self.validation_banner.setVisible(False)
         self.render_save()
+
+    def _update_title(self):
+        dirty = bool(save_api.dirty_paths())
+        if self.loaded:
+            name = os.path.basename(self.loaded.path)
+            self.setWindowTitle(f"{'*' if dirty else ''}{name} — Cain")
+        else:
+            self.setWindowTitle("Cain")
+        self.save_action.setEnabled(dirty)
+
+    def _poll_tick(self):
+        self._update_title()
+        if not self.loaded or not save_api.is_warm():
+            return
+        path = self.loaded.path
+        rev = save_api.revision(path)
+        if rev == self._last_rev:
+            # buffer settled; validate once per new revision
+            if rev != self._validated_rev and not self._validating:
+                self._validating = True
+                self._validator = _ValidateWorker(path, rev, self)
+                self._validator.done.connect(self._on_validated)
+                self._validator.start()
+        self._last_rev = rev
+
+    def _on_validated(self, path: str, rev: int, res: dict):
+        self._validating = False
+        # discard results from a worker started for a now-unloaded/different file
+        if not self.loaded or path != self.loaded.path:
+            return
+        self._validated_rev = rev
+        if res.get("ok"):
+            self._validation_errors = []
+            self.validation_banner.setVisible(False)
+        else:
+            self._validation_errors = list(res.get("errors", []))
+            n = len(self._validation_errors)
+            self.validation_banner.setText(
+                f"⚠ {n} validation issue{'s' if n != 1 else ''} — click for details")
+            self.validation_banner.setVisible(True)
+
+    def _show_validation_details(self):
+        if not self._validation_errors:
+            return
+        QMessageBox.warning(self, "Validation issues",
+                            "\n".join(self._validation_errors[:40]))
+
+    def save_now(self):
+        if not save_api.dirty_paths():
+            return
+        self._poll.stop()                 # don't validate _SESSION while saving mutates it
+        self._save_progress = QProgressDialog("Saving…", "", 0, 0, self)
+        self._save_progress.setWindowTitle("Cain")
+        self._save_progress.setCancelButton(None)
+        self._save_progress.setWindowModality(Qt.WindowModal)
+        self._save_progress.setMinimumDuration(0)
+        self.setEnabled(False)            # block edits during the write
+        self._save_progress.show()
+        self._saver = _SaveWorker(self)
+        self._saver.done.connect(self._on_save_done)
+        self._saver.start()
+
+    def _on_save_done(self, res: dict):
+        self.setEnabled(True)
+        self._save_progress.close()
+        if self._report_save_result(res):
+            self.statusBar().showMessage("Saved", 5000)
+        self._poll.start()
 
     def render_save(self):
         if not self.loaded:
@@ -2420,6 +2648,7 @@ class MainWindow(QMainWindow):
         self.selected_other_index = None
         self.selected_other_editable = False
         self.detail.show_item(None)
+        self._update_title()
 
     def set_other_sections(self, sections: list[dict]):
         self.other_sections = [sec for sec in sections if sec.get("id") != "player" and sec.get("items")]
@@ -2599,7 +2828,7 @@ class MainWindow(QMainWindow):
             return
         if source == self.loaded.path:
             self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Moved stash item and wrote {res['out']}", 7000)
+        self.statusBar().showMessage("Moved stash item — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         if source_combo_idx < self.stash_source.count():
             self.stash_source.setCurrentIndex(source_combo_idx)
@@ -2642,7 +2871,7 @@ class MainWindow(QMainWindow):
             self.load_current()
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Moved {item.get('name', 'item')} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Moved {item.get('name', 'item')} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         self.select_item(index)
 
@@ -2664,7 +2893,7 @@ class MainWindow(QMainWindow):
             return
         idx = self.selected_index
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Moved {item.get('name', 'item')} to inventory and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Moved {item.get('name', 'item')} to inventory — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         self.select_item(idx)
 
@@ -2728,7 +2957,7 @@ class MainWindow(QMainWindow):
             return
         idx = self.selected_index
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Equipped {item.get('name', 'item')} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Equipped {item.get('name', 'item')} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         self.select_item(idx)
 
@@ -2749,7 +2978,7 @@ class MainWindow(QMainWindow):
             return
         self.settings.setValue("paths/save", res["out"])
         self.statusBar().showMessage(
-            f"Equipped {item.get('name', 'item')} to {EQUIP_SLOT_NAMES.get(slot, slot)} and wrote {res['out']}",
+            f"Equipped {item.get('name', 'item')} to {EQUIP_SLOT_NAMES.get(slot, slot)} — unsaved (Ctrl+S to save)",
             7000)
         self.load_current()
         self.select_item(index)
@@ -2770,7 +2999,7 @@ class MainWindow(QMainWindow):
             return
         idx = self.selected_index
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Max rolled {name} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Max rolled {name} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         self.select_item(idx)
 
@@ -2800,7 +3029,7 @@ class MainWindow(QMainWindow):
         idx = self.selected_index
         name = item.get("name", "item")
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated {name} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Updated {name} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         self.select_item(idx)
 
@@ -2839,7 +3068,7 @@ class MainWindow(QMainWindow):
         name = item.get("name", "item")
         self.settings.setValue("paths/save", res["out"])
         self.statusBar().showMessage(
-            f"Updated {name} in {self.selected_other_section_name or 'section'} and wrote {res['out']}",
+            f"Updated {name} in {self.selected_other_section_name or 'section'} — unsaved (Ctrl+S to save)",
             7000)
         self.load_current()
         for row in range(self.other_list.count()):
@@ -2876,7 +3105,7 @@ class MainWindow(QMainWindow):
         idx = self.selected_index
         self.settings.setValue("paths/save", res["out"])
         self.statusBar().showMessage(
-            f"Removed {res.get('removed_count', 0)} socketed items and wrote {res['out']}",
+            f"Removed {res.get('removed_count', 0)} socketed items — unsaved (Ctrl+S to save)",
             7000)
         self.load_current()
         self.select_item(idx)
@@ -2908,7 +3137,7 @@ class MainWindow(QMainWindow):
         idx = self.selected_index
         filler = res.get("socketed", {}).get("name", code)
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Socketed {filler} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Socketed {filler} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         self.select_item(idx)
 
@@ -2928,7 +3157,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Duplicate rejected", res.get("error", "The item could not be duplicated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Duplicated {item.get('name', 'item')} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Duplicated {item.get('name', 'item')} — unsaved (Ctrl+S to save)", 7000)
         new_index = int(res.get("index", self.selected_index))
         self.load_current()
         self.select_item(new_index)
@@ -2975,8 +3204,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Copy rejected", res.get("error", "The item could not be copied to stash.") + ("\n" + details if details else ""))
             return
         self.statusBar().showMessage(
-            f"Copied {item.get('name', 'item')} to stash page {page_idx + 1} and wrote {res['out']}",
+            f"Copied {item.get('name', 'item')} to stash page {page_idx + 1} — unsaved (Ctrl+S to save)",
             9000)
+        self._update_title()
 
     def copy_selected_to_character(self):
         if not self.loaded:
@@ -3012,8 +3242,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Copy rejected", res.get("error", "The item could not be copied to character.") + ("\n" + details if details else ""))
             return
         self.statusBar().showMessage(
-            f"Copied {item.get('name', 'item')} to character inventory and wrote {res['out']}",
+            f"Copied {item.get('name', 'item')} to character inventory — unsaved (Ctrl+S to save)",
             9000)
+        self._update_title()
 
     def copy_selected_section_to_character(self):
         if not self.loaded or self.loaded.data.get("kind") != "character":
@@ -3043,7 +3274,7 @@ class MainWindow(QMainWindow):
         new_index = int(res.get("index", -1))
         self.settings.setValue("paths/save", res["out"])
         self.statusBar().showMessage(
-            f"Copied {item.get('name', 'item')} from {self.selected_other_section_name or 'section'} to inventory and wrote {res['out']}",
+            f"Copied {item.get('name', 'item')} from {self.selected_other_section_name or 'section'} to inventory — unsaved (Ctrl+S to save)",
             9000)
         self.load_current()
         if new_index >= 0:
@@ -3070,7 +3301,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Delete rejected", res.get("error", "The item could not be deleted.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Deleted {item.get('name', 'item')} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Deleted {item.get('name', 'item')} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def save_character_stats(self, updates: dict):
@@ -3086,7 +3317,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Character stat edit rejected", res.get("error", "The character stats could not be updated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated character stats and wrote {res['out']}", 7000)
+        self.statusBar().showMessage("Updated character stats — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def save_skills(self, updates: dict):
@@ -3102,7 +3333,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Skill edit rejected", res.get("error", "The skills could not be updated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated skills and wrote {res['out']}", 7000)
+        self.statusBar().showMessage("Updated skills — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def save_waypoints(self, updates: dict):
@@ -3118,7 +3349,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Waypoint edit rejected", res.get("error", "The waypoints could not be updated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated waypoints and wrote {res['out']}", 7000)
+        self.statusBar().showMessage("Updated waypoints — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def save_quests(self, updates: dict):
@@ -3134,7 +3365,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Quest edit rejected", res.get("error", "The quest flags could not be updated.") + ("\n" + details if details else ""))
             return
         self.settings.setValue("paths/save", res["out"])
-        self.statusBar().showMessage(f"Updated quest flags and wrote {res['out']}", 7000)
+        self.statusBar().showMessage("Updated quest flags — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
 
     def validate_save(self):
@@ -3171,7 +3402,7 @@ class MainWindow(QMainWindow):
             return False
         self.settings.setValue("paths/save", res["out"])
         added = res.get("added", {}).get("name", "item")
-        self.statusBar().showMessage(f"Created {added} and wrote {res['out']}", 7000)
+        self.statusBar().showMessage(f"Created {added} — unsaved (Ctrl+S to save)", 7000)
         self.load_current()
         return True
 

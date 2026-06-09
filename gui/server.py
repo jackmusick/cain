@@ -322,6 +322,74 @@ SKILL_NAME_SWAPS = {
 _gt = None
 _mpq = DEFAULT_MPQ
 _item_meta = None
+# Written by the warm worker thread, read on the main thread. Single writer,
+# monotonic False->True (reset only via set_mpq), so it's GIL-safe without a lock.
+_warm_done = False
+
+# --- in-memory edit session -------------------------------------------------
+# path -> {"data": bytearray, "dirty": bool, "kind": "d2s"|"stash", "rev": int}
+_SESSION: dict[str, dict] = {}
+
+
+def _session_key(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(path))
+
+
+def _read_bytes(path: str) -> bytearray:
+    """Return the live in-memory buffer for `path`, loading it from disk once.
+
+    All save-file reads in this module go through here so edits are visible
+    without touching disk until an explicit commit_save()."""
+    key = _session_key(path)
+    entry = _SESSION.get(key)
+    if entry is None:
+        with open(path, "rb") as fh:
+            data = bytearray(fh.read())
+        entry = {"data": data, "dirty": False,
+                 "kind": "stash" if _is_stash(path, bytes(data)) else "d2s",
+                 "rev": 0}
+        _SESSION[key] = entry
+    return entry["data"]
+
+
+def _store_bytes(path: str, data: bytes | bytearray) -> None:
+    """Replace the buffer for `path`, marking it dirty and bumping its revision."""
+    key = _session_key(path)
+    entry = _SESSION.get(key)
+    buf = data if isinstance(data, bytearray) else bytearray(data)
+    if entry is None:
+        entry = {"data": buf, "dirty": True,
+                 "kind": "stash" if _is_stash(path, bytes(buf)) else "d2s",
+                 "rev": 1}
+        _SESSION[key] = entry
+    else:
+        entry["data"] = buf
+        entry["dirty"] = True
+        entry["rev"] += 1
+
+
+def discard(path: str) -> None:
+    """Drop the in-memory buffer so the next read reloads from disk."""
+    _SESSION.pop(_session_key(path), None)
+
+
+def dirty_paths() -> list[str]:
+    """Absolute keys of buffers with unsaved edits."""
+    return [k for k, e in _SESSION.items() if e["dirty"]]
+
+
+def revision(path: str) -> int:
+    """Edit revision counter for `path` (0 if not loaded)."""
+    entry = _SESSION.get(_session_key(path))
+    return entry["rev"] if entry else 0
+
+
+def reset_session() -> None:
+    """Test/teardown hook: forget all buffers."""
+    _SESSION.clear()
+
+
+# ---------------------------------------------------------------------------
 
 
 def _int(s, default: int = 0) -> int:
@@ -865,14 +933,46 @@ def _mpq_status():
 
 
 def set_mpq(path: str):
-    global _gt, _item_meta, _mpq
+    global _gt, _item_meta, _mpq, _warm_done
     path = os.path.abspath(os.path.expanduser(path or ""))
     if not path or not os.path.exists(path):
         return {"ok": False, "error": f"not found: {path}"}
+    if path == _mpq:
+        # Same MPQ as already loaded — keep the warm table cache. Edit handlers
+        # call this on every refresh; resetting here would re-parse all tables
+        # on every edit.
+        return _mpq_status()
     _mpq = path
     _gt = None
     _item_meta = None
+    _warm_done = False
     return _mpq_status()
+
+
+# the table-derived sets the desktop app reads when opening the Item Editor
+_WARM_BROWSE = ("bases", "stats", "uniques", "sets", "magic_prefixes",
+                "magic_suffixes", "rare_prefixes", "rare_suffixes",
+                "runewords", "socket_fillers")
+
+
+def warm():
+    """Build every table/derived structure the app uses, so later table access
+    is a cache hit. Safe to call on a worker thread; finishes before the UI
+    touches tables()."""
+    global _warm_done
+    gt = tables()
+    gt.build_schema()
+    gt.build_affix_max()
+    gt.build_stat_encoding()
+    gt.stat_table()
+    for kind in _WARM_BROWSE:
+        browse(kind)
+    _warm_done = True
+    return True
+
+
+def is_warm() -> bool:
+    return _warm_done
 
 
 def _pick_with_command(kind: str):
@@ -1353,7 +1453,7 @@ def _character_item_sections(data: bytes, st):
 
 
 def parse_save(path):
-    data = open(path, "rb").read()
+    data = bytes(_read_bytes(path))
     st = tables().stat_table()
     if _is_stash(path, data):
         s = stash_mod.parse_stash(data, st)
@@ -1438,7 +1538,7 @@ def character_summary(path: str) -> dict:
     -100) are left to the caller, since the save stores mods, not totals."""
     try:
         save = parse_save(path)
-        data = open(path, "rb").read()
+        data = bytes(_read_bytes(path))
     except Exception as e:  # noqa: BLE001 — contract is "always JSON, never crash"
         return {"error": f"{type(e).__name__}: {e}"}
     if save.get("kind") != "character":
@@ -1751,29 +1851,81 @@ def _finalize(data: bytearray):
     struct.pack_into("<I", data, 0x0C, compute_checksum_d2(bytes(data)))
 
 
-def _gate_and_write(data: bytearray, path: str):
-    """Validate, back up the original, then save in place."""
+def _gate_and_write(data, path: str):
+    """Apply an edit to the in-memory buffer. No disk write, no backup, no
+    validation here — validation is debounced in the UI and run authoritatively
+    by commit_save()."""
+    _store_bytes(path, data)
+    return {"ok": True, "out": path, "pending": True}
+
+
+def _gate_and_write_stash(data, path: str):
+    """Stash edits buffer the same way as character edits; kept as a named
+    call site for the stash do_* handlers."""
+    return _gate_and_write(data, path)
+
+
+def validate_buffer(path: str):
+    """Validate the in-memory buffer for `path` without writing. Returns
+    {"ok": True} or {"ok": False, "errors": [...]}. Requires tables (MPQ)."""
     st = tables().stat_table()
-    res = validate_mod.validate_d2s(bytes(data), st)
-    if not res.ok:
-        return {"error": "edit rejected by validator (would not load)",
-                "details": res.errors}
+    data = bytes(_read_bytes(path))   # ensures the entry exists
+    kind = _SESSION[_session_key(path)]["kind"]
+    res = (validate_mod.validate_stash(data, st) if kind == "stash"
+           else validate_mod.validate_d2s(data, st))
+    return {"ok": res.ok, "errors": list(res.errors)}
+
+
+def _write_committed(path: str):
+    """Back up the original, write the buffer snapshot to disk, clear dirty.
+    Does NOT validate — caller is responsible for having validated first."""
+    key = _session_key(path)
+    entry = _SESSION[key]
+    payload = bytes(entry["data"])   # snapshot; assumes single writer (Qt UI is
+                                     # disabled during save)
     backup = _backup_original(path)
     with open(path, "wb") as f:
-        f.write(bytes(data))
+        f.write(payload)
+    entry["dirty"] = False
     return {"ok": True, "out": path, "backup": backup, "validated": True}
 
 
-def _gate_and_write_stash(data: bytes, path: str):
-    st = tables().stat_table()
-    res = validate_mod.validate_stash(bytes(data), st)
-    if not res.ok:
-        return {"error": "edit rejected by stash validator",
-                "details": res.errors}
-    backup = _backup_original(path)
-    with open(path, "wb") as f:
-        f.write(bytes(data))
-    return {"ok": True, "out": path, "backup": backup, "validated": True}
+def commit_save(path: str):
+    """Validate the buffer, back up the original, write to disk, clear dirty."""
+    key = _session_key(path)
+    entry = _SESSION.get(key)
+    if entry is None or not entry["dirty"]:
+        return {"ok": True, "out": path, "nothing_to_do": True}
+    v = validate_buffer(path)
+    if not v["ok"]:
+        return {"ok": False, "error": "edit rejected by validator (would not load)",
+                "details": v["errors"], "path": path}
+    return _write_committed(path)
+
+
+def commit_all():
+    """Save every dirty buffer atomically across files: validate ALL dirty
+    buffers first, then write them only if every one passes. If any buffer
+    fails validation, nothing is written (no half-persisted cross-file moves).
+
+    Note: full disk-write atomicity (temp+rename) is out of scope; the guarantee
+    is validate-all-then-write-all."""
+    paths = list(dirty_paths())
+
+    # Phase 1: validate every dirty buffer; collect failures without writing.
+    failures = []
+    for path in paths:
+        v = validate_buffer(path)
+        if not v["ok"]:
+            failures.append({"ok": False,
+                             "error": "edit rejected by validator (would not load)",
+                             "details": v["errors"], "path": path})
+    if failures:
+        return {"ok": False, "results": failures, "aborted": True}
+
+    # Phase 2: all valid — back up + write every buffer (no re-validation).
+    results = [_write_committed(path) for path in paths]
+    return {"ok": True, "results": results}
 
 
 def _stat_edit_bounds(stat):
@@ -2128,7 +2280,7 @@ def do_edit(body):
     path, idx = body["path"], int(body["item"])
     stat_id, value = int(body["stat_id"]), int(body["value"])
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     it = items[idx]
     try:
@@ -2149,7 +2301,7 @@ def do_maxroll(body):
     path, idx = body["path"], int(body["item"])
     st = tables().stat_table()
     gt = tables()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     it = items[idx]
     maxed = 0
@@ -2277,7 +2429,7 @@ def do_edititem(body):
     """Edit core item properties and simple/grouped item stats, then validate."""
     path, idx = body["path"], int(body["item"])
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2300,7 +2452,7 @@ def do_unsocketitem(body):
     """Remove socketed child items from a character item and validate the save."""
     path, idx = body["path"], int(body["item"])
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2332,7 +2484,7 @@ def do_socketitem(body):
     if code not in fillers:
         return {"error": f"{code} is not a rune, gem, or jewel filler"}
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2418,7 +2570,7 @@ def do_deleteitem(body):
     """Delete one top-level character item, including socketed children."""
     path, idx = body["path"], int(body["item"])
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2438,7 +2590,7 @@ def do_duplicateitem(body):
     """Duplicate one character item into the first free inventory location."""
     path, idx = body["path"], int(body["item"])
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2467,7 +2619,7 @@ def do_duplicateitem(body):
 def do_editchar(body):
     path = body["path"]
     updates = body.get("stats", {})
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     start, end, entries, _values = _char_stat_block(bytes(data))
     by_key = {entry["key"]: entry for entry in entries}
     changed = {}
@@ -2512,7 +2664,7 @@ def do_editchar(body):
 def do_editskills(body):
     path = body["path"]
     updates = body.get("skills", {})
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, end, skills = _skill_block(bytes(data))
     by_id = {int(skill["id"]): skill for skill in skills}
     by_index = {int(skill["index"]): skill for skill in skills}
@@ -2541,7 +2693,7 @@ def do_editskills(body):
 def do_editwaypoints(body):
     path = body["path"]
     updates = body.get("waypoints", {})
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     _off, _size, records = _waypoint_block(bytes(data))
     changed = {}
     for diff_key, value in updates.items():
@@ -2575,7 +2727,7 @@ def do_editwaypoints(body):
 def do_editquests(body):
     path = body["path"]
     updates = body.get("quests", {})
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     _off, _size, records = _quest_block(bytes(data))
     changed = {}
     for diff_key, values in updates.items():
@@ -2677,7 +2829,7 @@ def do_moveitem(body):
     """Move a character item to an inventory grid position and validate the save."""
     path, idx = body["path"], int(body["item"])
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2741,7 +2893,7 @@ def do_equipitem(body):
     if slot not in EQUIP_SLOTS:
         return {"error": f"unknown equipment slot {slot}"}
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
     if idx < 0 or idx >= len(items):
         return {"error": f"item index out of range: {idx}"}
@@ -2825,7 +2977,7 @@ def do_movestashitem(body):
     page_idx, item_idx = int(body["page"]), int(body["item"])
     x, y = int(body["x"]), int(body["y"])
     st = tables().stat_table()
-    raw = open(path, "rb").read()
+    raw = bytes(_read_bytes(path))
     stash = stash_mod.parse_stash(raw, st)
     pages = _stash_page_list(stash)
     if page_idx < 0 or page_idx >= len(pages):
@@ -2858,12 +3010,12 @@ def do_copyitemtostash(body):
     idx = int(body["item"])
     page_idx = int(body.get("page", 0))
     st = tables().stat_table()
-    char_raw = open(char_path, "rb").read()
+    char_raw = bytes(_read_bytes(char_path))
     _off, _pcount, char_items, _pend = _walk_player(char_raw, st)
     if idx < 0 or idx >= len(char_items):
         return {"error": f"item index out of range: {idx}"}
 
-    stash_raw = open(stash_path, "rb").read()
+    stash_raw = bytes(_read_bytes(stash_path))
     stash = stash_mod.parse_stash(stash_raw, st)
     pages = _stash_page_list(stash)
     if page_idx < 0 or page_idx >= len(pages):
@@ -2915,7 +3067,7 @@ def do_copystashitemtochar(body):
     item_idx = int(body["item"])
     st = tables().stat_table()
 
-    stash_raw = open(stash_path, "rb").read()
+    stash_raw = bytes(_read_bytes(stash_path))
     stash = stash_mod.parse_stash(stash_raw, st)
     pages = _stash_page_list(stash)
     if page_idx < 0 or page_idx >= len(pages):
@@ -2924,7 +3076,7 @@ def do_copystashitemtochar(body):
     if item_idx < 0 or item_idx >= len(stash_items):
         return {"error": f"stash item out of range: {item_idx}"}
 
-    data = bytearray(open(char_path, "rb").read())
+    data = bytearray(_read_bytes(char_path))
     off, pcount, char_items, pend = _walk_player(bytes(data), st)
     new = copy.deepcopy(stash_items[item_idx])
     try:
@@ -2957,7 +3109,7 @@ def do_copysectionitemtochar(body):
     if not section_id or section_id == "player":
         return {"error": "choose a mercenary, corpse, or golem section item"}
     st = tables().stat_table()
-    data = bytearray(open(char_path, "rb").read())
+    data = bytearray(_read_bytes(char_path))
     sections = _character_item_sections(bytes(data), st)
     source = next((sec for sec in sections if sec.get("id") == section_id), None)
     if source is None:
@@ -2999,7 +3151,7 @@ def do_editsectionitem(body):
     if not section_id or section_id == "player":
         return {"error": "choose a mercenary, corpse, or golem section item"}
     st = tables().stat_table()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     sections = _character_item_sections(bytes(data), st)
     section = next((sec for sec in sections if sec.get("id") == section_id), None)
     if section is None:
@@ -3041,7 +3193,7 @@ def do_additem(body):
     want_stats = body.get("stats", [])  # [{stat_id, value}]
     st = tables().stat_table()
     gt = tables()
-    data = bytearray(open(path, "rb").read())
+    data = bytearray(_read_bytes(path))
     off, pcount, items, pend = _walk_player(bytes(data), st)
 
     # Use an existing clean item of the same broad kind as a structural skeleton,
@@ -3266,9 +3418,16 @@ def _rebuild_item_list_region(data, st, items, off: int, end: int):
 
 
 def do_validate(body):
+    """Validate the in-memory buffer (not the on-disk file) so the result agrees
+    with the live validation banner. Picks the validator by buffer kind, exactly
+    like validate_buffer()."""
+    path = body["path"]
     st = tables().stat_table()
-    res = validate_mod.validate_file(body["path"], st)
-    return {"valid": res.ok, "errors": res.errors, "warnings": res.warnings,
+    data = bytes(_read_bytes(path))   # ensures the entry exists
+    kind = _SESSION[_session_key(path)]["kind"]
+    res = (validate_mod.validate_stash(data, st) if kind == "stash"
+           else validate_mod.validate_d2s(data, st))
+    return {"valid": res.ok, "errors": list(res.errors), "warnings": list(res.warnings),
             "items": res.item_count, "sections": res.sections}
 
 
@@ -3340,9 +3499,25 @@ class Handler(BaseHTTPRequestHandler):
                   "/api/additem": do_additem, "/api/validate": do_validate,
                   "/api/mpq": lambda b: set_mpq(b.get("path", ""))}
         fn = routes.get(u.path)
+        # The native app stages edits in memory and writes on an explicit Save.
+        # The legacy web UI has no Save button, so it persists each successful
+        # mutating edit immediately (validate-on-write, like the old behavior).
+        non_persist = {"/api/validate", "/api/mpq"}
         try:
-            self._json(fn(body) if fn else {"error": "not found"},
-                       200 if fn else 404)
+            if not fn:
+                self._json({"error": "not found"}, 404)
+                return
+            result = fn(body)
+            if u.path not in non_persist and result.get("ok"):
+                commit = commit_all()
+                if not commit.get("ok"):
+                    details = [d for r in commit.get("results", [])
+                               for d in r.get("details", []) or []]
+                    result = {"error": "edit rejected by validator (would not load)",
+                              "details": details}
+                else:
+                    result["committed"] = True
+            self._json(result, 200)
         except Exception as e:  # noqa: BLE001
             import traceback
             self._json({"error": repr(e), "trace": traceback.format_exc()}, 500)
