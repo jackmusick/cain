@@ -937,6 +937,11 @@ def set_mpq(path: str):
     path = os.path.abspath(os.path.expanduser(path or ""))
     if not path or not os.path.exists(path):
         return {"ok": False, "error": f"not found: {path}"}
+    if path == _mpq:
+        # Same MPQ as already loaded — keep the warm table cache. Edit handlers
+        # call this on every refresh; resetting here would re-parse all tables
+        # on every edit.
+        return _mpq_status()
     _mpq = path
     _gt = None
     _item_meta = None

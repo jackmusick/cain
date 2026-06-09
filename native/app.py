@@ -2493,7 +2493,10 @@ class MainWindow(QMainWindow):
         mpq = self.settings.value("paths/mpq", "")
         try:
             save_api.set_mpq(mpq)
-            ASSETS = DiabloAssetLoader(mpq)
+            # Rebuild the asset loader only when the MPQ actually changed —
+            # reopening every archive on each edit refresh is expensive.
+            if ASSETS is None or getattr(ASSETS, "mpq_path", None) != mpq:
+                ASSETS = DiabloAssetLoader(mpq)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Could not load MPQ", str(e))
             return
